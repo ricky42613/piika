@@ -15,7 +15,7 @@ _yours_.
 
 `pi-serini` is a reusable, benchmark-driven `pi` search-agent workspace for index-driven BM25 retrieval, agentic search, and benchmark-aware evaluation.
 
-Current release status: `v0.1.0` supports index-driven benchmark and agentic search workflows for MS MARCO v1 Passage (`dl19`, `dl20`) and BrowseComp-Plus, with `benchmark-template` included as a tiny local end-to-end demo benchmark.
+Current release status: `v0.3.0` supports index-driven benchmark and agentic search workflows for MS MARCO v1 Passage (`dl19`, `dl20`) and BrowseComp-Plus, with `benchmark-template` included as a tiny local end-to-end demo benchmark. This release tracks the Pi package namespace migration to `@earendil-works/*` and requires `pi` 0.74.0 or newer.
 
 The repo is now manifest-driven rather than BrowseComp-Plus-only:
 

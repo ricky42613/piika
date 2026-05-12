@@ -2,10 +2,13 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-12
+
 ### Added
 
 - Added a BrowseComp-Plus external-run adapter at `src/adapters/import_search_jsonl_run.ts` plus the package script `npm run adapt:search-jsonl-run`, allowing one-JSON-object-per-line search-session artifacts to be normalized into the repo's native run directory format with per-query JSON files, `benchmark_manifest_snapshot.json`, and `run_setup.json`. This makes imported BrowseComp-Plus runs evaluable by both retrieval metrics and the downstream LLM-as-judge pipeline.
 - Added focused regression coverage for the new external-run importer in `tests/import_search_jsonl_run.test.ts` and extracted shared calibration helpers in `src/evaluation/calibration.ts` with focused coverage in `tests/calibration.test.ts`.
+- Added README links from @ricky42613 for the Pi-Serini project page and released BrowseComp-Plus run datasets on Hugging Face, including runs for DeepSeek V4, GPT-5-family, Claude Opus 4.7, and Claude 3.5 Haiku variants.
 
 ### Changed
 
