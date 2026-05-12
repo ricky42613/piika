@@ -7,7 +7,7 @@ A reusable, reproducible `pi` search-agent workspace
 [![License](https://img.shields.io/badge/license-MIT-111111?style=flat-square)](./LICENSE)
 [![Pi package](https://img.shields.io/badge/pi-package-111111?style=flat-square)](https://pi.dev)
 
-There are many search agents, but this one is 
+There are many search agents, but this one is
 
 _yours_.
 
@@ -291,6 +291,7 @@ Legacy shell scripts under `scripts/` still work, but they are compatibility shi
 
 ## Read more
 
+- [paper](https://arxiv.org/abs/2605.10848)
 - [Project page](https://ricky42613.github.io/piserini.html)
 - [Running benchmarks](docs/running-benchmarks.md)
 - [Evaluation semantics](docs/evaluation.md)
@@ -306,6 +307,20 @@ Legacy shell scripts under `scripts/` still work, but they are compatibility shi
   - [PiSerini w/ GPT-5.5](https://huggingface.co/datasets/ricky42613/piserini_bcp_gpt55)
   - [PiSerini w/ Claude Opus 4.7](https://huggingface.co/datasets/ricky42613/piserini_bcp_opus47)
   - [PiSerini w/ Claude 3.5 Haiku](https://huggingface.co/datasets/ricky42613/piserini_bcp_haiku)
+
+## Citation
+
+```bibtex
+@misc{hsu2026rethinkingagenticsearchpiserini,
+  title         = {Rethinking Agentic Search with Pi-Serini: Is Lexical Retrieval Sufficient?},
+  author        = {Tz-Huan Hsu and Jheng-Hong Yang and Jimmy Lin},
+  year          = {2026},
+  eprint        = {2605.10848},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.IR},
+  url           = {https://arxiv.org/abs/2605.10848}
+}
+```
 
 ## Notes
 
