@@ -291,12 +291,27 @@ Legacy shell scripts under `scripts/` still work, but they are compatibility shi
 
 ## Read more
 
+- Paper: [Rethinking Agentic Search with Pi-Serini: Is Lexical Retrieval Sufficient?](https://arxiv.org/abs/2605.10848)
 - [Project page](https://ricky42613.github.io/piserini.html)
 - [Running benchmarks](docs/running-benchmarks.md)
 - [Evaluation semantics](docs/evaluation.md)
 - [Reproducibility](docs/reproducibility.md)
 - [Adding a benchmark](docs/adding-a-benchmark.md)
 - [BM25 backend interface](docs/bm25-extension-interface.md)
+
+## Citation
+
+```bibtex
+@misc{hsu2026rethinkingagenticsearchpiserini,
+  title         = {Rethinking Agentic Search with Pi-Serini: Is Lexical Retrieval Sufficient?},
+  author        = {Tz-Huan Hsu and Jheng-Hong Yang and Jimmy Lin},
+  year          = {2026},
+  eprint        = {2605.10848},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.IR},
+  url           = {https://arxiv.org/abs/2605.10848}
+}
+```
 
 ## Notes
 
