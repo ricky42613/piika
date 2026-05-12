@@ -7,7 +7,7 @@ A reusable, reproducible `pi` search-agent workspace
 [![License](https://img.shields.io/badge/license-MIT-111111?style=flat-square)](./LICENSE)
 [![Pi package](https://img.shields.io/badge/pi-package-111111?style=flat-square)](https://pi.dev)
 
-There are many search agents, but this one is 
+There are many search agents, but this one is
 
 _yours_.
 
@@ -291,7 +291,7 @@ Legacy shell scripts under `scripts/` still work, but they are compatibility shi
 
 ## Read more
 
-- Paper: [Rethinking Agentic Search with Pi-Serini: Is Lexical Retrieval Sufficient?](https://arxiv.org/abs/2605.10848)
+- [paper](https://arxiv.org/abs/2605.10848)
 - [Project page](https://ricky42613.github.io/piserini.html)
 - [Running benchmarks](docs/running-benchmarks.md)
 - [Evaluation semantics](docs/evaluation.md)
