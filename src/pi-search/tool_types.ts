@@ -31,6 +31,12 @@ export type SearchPage = {
   results: Array<SearchBackendSearchHit & { rank: number }>;
 };
 
+export type SelfBuiltSearchDetails = {
+  query: string;
+  searchType: string;
+  matchedRubrics: Record<string, string[]>;
+}
+
 export type SearchDetails = {
   searchId: string;
   rawQuery: string;

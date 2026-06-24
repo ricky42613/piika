@@ -54,6 +54,7 @@
     "run:benchmark:query-set:shared": "npm run run:benchmark:query-set:shared-bm25 --",
     "run:benchmark:query-set:sharded": "npm run run:benchmark:query-set:sharded-shared-bm25 --",
     "run:benchmark:shared": "npx tsx src/legacy/launch_shared_bm25_benchmark_entry.ts",
+    "run:prompt": "npx tsx src/orchestration/run_prompt.ts",
     "run:browsecomp-plus:slice": "npx tsx src/legacy/browsecomp_compat_entry.ts --mode run",
     "run:browsecomp-plus:slice:shared": "npx tsx src/legacy/browsecomp_compat_entry.ts --mode shared",
     "run:browsecomp-plus:slice:sharded": "npx tsx src/legacy/browsecomp_compat_entry.ts --mode sharded",

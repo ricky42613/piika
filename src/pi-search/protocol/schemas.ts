@@ -125,6 +125,14 @@ export const ReadDocumentPayloadSchema = Type.Object(
   { additionalProperties: true },
 );
 
+export const SelfBuiltSearchSchema = Type.Object({
+  reason: Type.String({
+    description:
+      "Brief rationale for opening this document, maximum 100 words. State the candidate clue or fact you expect to verify in this doc.",
+  }),
+  cmd: Type.String({ description: "command to run search python script." }),
+});
+
 export type PlainSearchParams = Static<typeof PlainSearchParamsSchema>;
 export type DirectSearchParams = Static<typeof DirectSearchParamsSchema>;
 export type ReadSearchResultsParams = Static<typeof ReadSearchResultsParamsSchema>;
@@ -136,3 +144,4 @@ export type RpcTimingMs = Static<typeof RpcTimingMsSchema>;
 export type SearchPayload = Static<typeof SearchPayloadSchema>;
 export type RenderSearchResultsPayload = Static<typeof RenderSearchResultsPayloadSchema>;
 export type ReadDocumentPayload = Static<typeof ReadDocumentPayloadSchema>;
+export type SelfBuiltSearchParams = Static<typeof SelfBuiltSearchSchema>;

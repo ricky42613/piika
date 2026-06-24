@@ -14,6 +14,7 @@ import {
   PlainSearchParamsSchema,
   ReadDocumentParamsSchema,
   ReadSearchResultsParamsSchema,
+  SelfBuiltSearchSchema
 } from "./protocol/schemas";
 import { SearchSessionStore } from "./search_cache";
 import {
@@ -28,9 +29,10 @@ import {
   executeReadDocumentTool,
   executeReadSearchResultsTool,
   executeSearchTool,
+  executeSelfBuiltSearchTool
 } from "./tool_handlers";
 
-export type PiSearchToolInterface = "pi-serini-3tool" | "pyserini-rest-2tool";
+export type PiSearchToolInterface = "pi-serini-3tool" | "pyserini-rest-2tool" | "self-built";
 
 export type PiSearchExtensionOptions = {
   resolveConfig?: (env: NodeJS.ProcessEnv) => PiSearchExtensionConfig;
@@ -49,6 +51,124 @@ function resolveToolInterface(options: PiSearchExtensionOptions): PiSearchToolIn
   throw new Error(
     `Invalid PI_SEARCH_TOOL_INTERFACE=${raw}. Expected pi-serini-3tool or pyserini-rest-2tool.`,
   );
+}
+
+export function registerSelfBuiltSearchExtension(pi: ExtensionAPI): void {
+  let promptSnapshotWritten = false;
+  let submitNowTimer: ReturnType<typeof setTimeout> | null = null;
+  let submitNowMode = false;
+  const submitNowDelayMs = getSubmitNowDelayMs();
+
+  pi.on("before_agent_start", async (event) => {
+    const strippedSystemPrompt = stripBenchmarkIrrelevantSystemPromptSections(event.systemPrompt);
+    if (!promptSnapshotWritten) {
+      dumpPromptSnapshot(strippedSystemPrompt, event.prompt);
+      promptSnapshotWritten = true;
+    }
+    if (strippedSystemPrompt === event.systemPrompt) {
+      return;
+    }
+    return { systemPrompt: strippedSystemPrompt };
+  });
+
+  pi.on("agent_start", async (_event, ctx) => {
+    clearSubmitNowTimer();
+
+    function clearSubmitNowTimer() {
+      if (submitNowTimer !== null) {
+        clearTimeout(submitNowTimer);
+        submitNowTimer = null;
+      }
+    }
+    if (submitNowDelayMs === null) {
+      return;
+    }
+    submitNowTimer = setTimeout(() => {
+      if (submitNowMode || ctx.isIdle()) {
+        return;
+      }
+      submitNowMode = true;
+      try {
+        console.error(
+          `[pi-search] Time budget threshold reached at ${(submitNowDelayMs / 1000).toFixed(1)}s (${Math.round(SUBMIT_NOW_TRIGGER_RATIO * 100)}% of TIMEOUT_SECONDS=${BENCHMARK_TIMEOUT_SECONDS}); queueing submit-now steer and blocking further retrieval tools.`,
+        );
+        pi.sendUserMessage(SUBMIT_NOW_STEER_MESSAGE, { deliverAs: "steer" });
+      } catch (error) {
+        console.error(
+          `[pi-search] Failed to queue submit-now steer: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        submitNowMode = false;
+      }
+    }, submitNowDelayMs);
+  });
+
+  pi.on("tool_call", async (event) => {
+    if (!submitNowMode) {
+      return;
+    }
+    console.error(
+      `[pi-search] Blocking ${event.toolName} after timeout steer; model must submit final answer now.`,
+    );
+    return {
+      block: true,
+      reason:
+        "Time budget is nearly exhausted. Do not use more retrieval tools; submit your final answer right now.",
+    };
+  });
+
+  function clearSubmitNowTimer() {
+    if (submitNowTimer !== null) {
+      clearTimeout(submitNowTimer);
+      submitNowTimer = null;
+    }
+  }
+
+  pi.on("agent_end", async () => {
+    clearSubmitNowTimer();
+    submitNowMode = false;
+  });
+
+  pi.on("session_shutdown", async () => {
+    clearSubmitNowTimer();
+    submitNowMode = false;
+  });
+
+  if (!process.env.SEARCH_SCRIPT) {
+    throw new Error(
+      `Miss SEARCH_SCRIPT in environment variable.`,
+    ); 
+  }
+
+  if (!process.env.WORKSPACE) {
+    throw new Error(
+      `Miss WORKSPACE in environment variable.`,
+    ); 
+  }
+
+  const toolDeps = {
+    searchScript: process.env.SEARCH_SCRIPT,
+    workSpace: process.env.WORKSPACE
+    
+  }
+
+   pi.registerTool({
+    name: "search",
+    label: "search",
+    description:
+      "Run the provided self-built Python hybrid search script. This script would automatically decide whether to use lexical search, semantic search for searching the relevant documents or to use grep for matching relevant passages. The first argument must be reason, a brief rationale of at most 100 words; cmd must be the exact shell command to execute the provided search script.",
+    promptSnippet:
+      "Use this search tool by running the provided Python script: python {SCRIPT_PATH} [agentic-decided arguments].",
+    promptGuidelines: [
+      "Always provide reason first. Keep it specific and under 100 words.",
+      "The cmd argument must execute the provided Python search script; do not call arbitrary commands or other scripts.",
+      "Use --help to understand the usage and supported arguments for the provided script.",
+      "Based on the usage from --help, construct a valid command with the required arguments and only the options supported by the script",
+    ],
+    parameters: SelfBuiltSearchSchema,
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      return executeSelfBuiltSearchTool(params, signal, ctx, toolDeps);
+    },
+  });
 }
 
 export function registerPiSearchExtension(
@@ -272,6 +392,3 @@ export function registerPiSearchExtension(
   });
 }
 
-export default function (pi: ExtensionAPI) {
-  registerPiSearchExtension(pi);
-}

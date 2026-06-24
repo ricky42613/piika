@@ -22,11 +22,38 @@ Workflow:
 
 Question: {Question}`;
 
-export type PiSearchPromptVariant = "plain_minimal";
+export const PI_SEARCH_QUERY_TEMPLATE_SELF_BUILT_SEARCH = `You are a deep research agent answering a question using only the provided search script.
+
+WORKSPACE: {WORKSPACE}
+SCRIPT_PATH: {SCRIPT_PATH}
+This script will (1) search with complicated stratgies and cache results, and (2) grep through the cached results with flexible patterns.
+
+Workflow:
+1. Before doing anything else, you MUST first run "python {SCRIPT_PATH} --help" to inspect the search script's usage. Do this unconditionally at the start of the task, even if you think you already know how to use the script.
+2. After reading the --help output, construct valid commands using only the supported arguments shown by --help.
+3. Use "python {SCRIPT_PATH} --workspace {WORKSPACE} <args>" to perform searches with the required arguments.
+4. As soon as you have enough evidence, stop using tools and answer in plain assistant text.
+5. ${FINAL_RESPONSE_FORMAT}
+6. ${SUBMIT_NOW_REMINDER}
+7. Keep Exact Answer concise and directly responsive to the question.
+
+Question: {Question}`;
+
+export type PiSearchPromptVariant = "plain_minimal" | "self_built_search";
 
 export function formatPiSearchPrompt(
   query: string,
   _variant: PiSearchPromptVariant = "plain_minimal",
 ): string {
   return PI_SEARCH_QUERY_TEMPLATE_PLAIN_MINIMAL.replace("{Question}", query);
+}
+
+export function formatPiSearchPromptWithSelfBuiltSearch(
+  query: string,
+  scriptPath: string,
+  workspace: string,
+): string {
+  return PI_SEARCH_QUERY_TEMPLATE_SELF_BUILT_SEARCH.replace("{Question}", query)
+    .replaceAll("{SCRIPT_PATH}", scriptPath)
+    .replaceAll("{WORKSPACE}", workspace);
 }
