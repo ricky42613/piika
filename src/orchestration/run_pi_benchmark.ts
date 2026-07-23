@@ -23,13 +23,29 @@ import {
 } from "../pi-search/protocol/tool_result_details";
 import { startBm25ServerTcp } from "../search-providers/anserini/bm25_server_process";
 import { prepareIsolatedAgentDir } from "../runtime/pi_agent_dir";
-import { formatPiSearchPrompt, type PiSearchPromptVariant } from "../pi-search/agent_prompt";
+import {
+  formatPiSearchOutputModes,
+  formatPiSearchPrompt,
+  hasPiSearchOutputMode,
+  parsePiSearchOutputModes,
+  type PiSearchOutputModes,
+  type PiSearchPromptVariant,
+} from "../pi-search/agent_prompt";
 import type { PiSearchToolInterface } from "../pi-search/extension";
+import {
+  DEFAULT_PI_SEARCH_TOOL_INTERFACE,
+  parsePiSearchToolInterface,
+} from "../pi-search/tool_interface";
 import { resolveGitCommitProvenance } from "../runtime/git";
 import { startPiJsonProcess, startPiProcessTimeout } from "../runtime/pi_process";
 import { parsePiEventJsonLine, type PiEvent } from "../runtime/pi_json_protocol";
 import { QueryResultSpool, type QueryNormalizedResult } from "./query_result_spool";
 import { extractCitationsFromText } from "../evaluation/run_docid_views";
+import {
+  DEFAULT_RANKED_LIST_DEPTH,
+  parseRankedDocidsFromAssistantText,
+  writeRankedListTrecRunFile,
+} from "../evaluation/ranked_list_output";
 import {
   createBenchmarkManifestSnapshot,
   getDefaultBenchmarkId,
@@ -46,6 +62,10 @@ type BenchmarkRun = {
     output_dir: string;
     query: string;
     prompt_variant: PiSearchPromptVariant;
+    output_mode: string;
+    output_modes: PiSearchOutputModes;
+    ranked_list_depth?: number;
+    ranked_list_count?: number;
     tool_interface?: PiSearchToolInterface;
     search_backend_kind?: string;
     bm25_search_tool_mode?: string;
@@ -60,6 +80,9 @@ type BenchmarkRun = {
   agent_docids: string[];
   opened_docids: string[];
   cited_docids: string[];
+  ranked_docids?: string[];
+  ranked_list_parse_error?: string;
+  ranked_list_count_error?: string;
   stats: {
     elapsed_seconds: number;
     assistant_turns: number;
@@ -103,6 +126,10 @@ type PersistedRunSetup = {
   shardRetryMode?: string;
   toolInterface?: string;
   searchBackendKind?: string;
+  outputMode?: string;
+  outputModes?: string[];
+  rankedListDepth?: string;
+  rankedListCount?: string;
 };
 
 type RunPiOptions = {
@@ -255,17 +282,16 @@ async function getSearchBackendConnection(cwd: string): Promise<SearchBackendCon
   };
 }
 
-function parseToolInterface(value: string | undefined): PiSearchToolInterface {
-  const raw = value?.trim() || "pi-serini-3tool";
-  if (raw === "pi-serini-3tool" || raw === "pyserini-rest-2tool") {
-    return raw;
-  }
-  throw new Error(
-    `Invalid tool interface ${raw}. Expected pi-serini-3tool or pyserini-rest-2tool.`,
-  );
-}
-
 const PROMPT_VARIANTS: PiSearchPromptVariant[] = ["plain_minimal"];
+function parsePositiveInteger(value: string | undefined, label: string, fallback: number): number {
+  const raw = value?.trim();
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${label} must be a positive integer; received ${raw}`);
+  }
+  return parsed;
+}
 
 function parseArgs(argv: string[]) {
   const out: Record<string, string> = {
@@ -277,13 +303,28 @@ function parseArgs(argv: string[]) {
     pi: "pi",
     limit: "0",
     timeoutSeconds: "900",
-    toolInterface: process.env.PI_SEARCH_TOOL_INTERFACE?.trim() || "pi-serini-3tool",
+    toolInterface: process.env.PI_SEARCH_TOOL_INTERFACE?.trim() || DEFAULT_PI_SEARCH_TOOL_INTERFACE,
+    outputMode: process.env.OUTPUT_MODE?.trim() || "answer",
+    rankedListDepth: process.env.RANKED_LIST_DEPTH?.trim() || String(DEFAULT_RANKED_LIST_DEPTH),
+    rankedListCount: process.env.RANKED_LIST_COUNT?.trim() || "",
   };
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (!arg.startsWith("--")) continue;
-    const key = arg.slice(2);
+    const rawKey = arg.slice(2).replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
+    const key =
+      rawKey === "queryFile"
+        ? "query"
+        : rawKey === "outputDir"
+          ? "outputDir"
+          : rawKey === "promptVariant"
+            ? "promptVariant"
+            : rawKey === "timeoutSeconds"
+              ? "timeoutSeconds"
+              : rawKey === "indexPath"
+                ? "indexPath"
+                : rawKey;
     const value = argv[i + 1];
     if (!value || value.startsWith("--")) {
       throw new Error(`Missing value for --${key}`);
@@ -297,7 +338,7 @@ function parseArgs(argv: string[]) {
     querySetId: out.querySet,
     queryPath: out.query,
     qrelsPath: out.qrels,
-    indexPath: process.env.PI_BM25_INDEX_PATH?.trim() || undefined,
+    indexPath: out.indexPath ?? process.env.PI_BM25_INDEX_PATH?.trim() ?? undefined,
   });
   const piSearchPromptVariant = (out.promptVariant ??
     benchmarkConfig.benchmark.piSearchPromptVariant) as PiSearchPromptVariant;
@@ -307,6 +348,21 @@ function parseArgs(argv: string[]) {
     );
   }
 
+  const rankedListDepth = parsePositiveInteger(
+    out.rankedListDepth,
+    "rankedListDepth",
+    DEFAULT_RANKED_LIST_DEPTH,
+  );
+  const rankedListCount = out.rankedListCount
+    ? parsePositiveInteger(out.rankedListCount, "rankedListCount", rankedListDepth)
+    : undefined;
+  if (rankedListCount && rankedListCount > rankedListDepth) {
+    throw new Error(
+      `rankedListCount (${rankedListCount}) cannot exceed rankedListDepth (${rankedListDepth})`,
+    );
+  }
+
+  const outputModes = parsePiSearchOutputModes(out.outputMode);
   return {
     benchmarkId: benchmarkConfig.benchmark.id,
     querySetId: benchmarkConfig.querySetId,
@@ -321,7 +377,11 @@ function parseArgs(argv: string[]) {
     limit: Number.parseInt(out.limit, 10),
     timeoutSeconds: Number.parseInt(out.timeoutSeconds, 10),
     piSearchPromptVariant,
-    toolInterface: parseToolInterface(out.toolInterface),
+    outputMode: formatPiSearchOutputModes(outputModes),
+    outputModes,
+    rankedListDepth,
+    rankedListCount,
+    toolInterface: parsePiSearchToolInterface(out.toolInterface),
   };
 }
 
@@ -342,8 +402,20 @@ function readQueries(tsvPath: string): Array<{ queryId: string; query: string }>
     });
 }
 
-function formatPrompt(query: string, variant: PiSearchPromptVariant): string {
-  return formatPiSearchPrompt(query, variant);
+function formatPrompt(
+  query: string,
+  variant: PiSearchPromptVariant,
+  outputModes: PiSearchOutputModes,
+  toolInterface: PiSearchToolInterface,
+  rankedListDepth: number,
+  rankedListCount?: number,
+): string {
+  return formatPiSearchPrompt(query, variant, {
+    outputModes,
+    toolInterface,
+    rankedListDepth,
+    rankedListCount,
+  });
 }
 
 function readEvidenceQrels(path: string): EvidenceQrels {
@@ -922,6 +994,9 @@ function finalizeRun(
   model: string,
   outputDir: string,
   piSearchPromptVariant: PiSearchPromptVariant,
+  outputModes: PiSearchOutputModes,
+  rankedListDepth: number,
+  rankedListCount: number | undefined,
   toolInterface: PiSearchToolInterface,
   searchBackendKind: string,
   state: QueryRunAccumulator,
@@ -962,6 +1037,18 @@ function finalizeRun(
     ? extractCitationsFromText(state.finalAssistantText)
     : [];
   const agentDocids = Array.from(new Set([...state.openedDocids, ...citedDocids]));
+  const parsedRankedList =
+    hasPiSearchOutputMode(outputModes, "ranked_list") && state.finalAssistantText
+      ? parseRankedDocidsFromAssistantText(state.finalAssistantText)
+      : undefined;
+  const outputLimit = rankedListCount ?? rankedListDepth;
+  const rankedList = parsedRankedList
+    ? { ...parsedRankedList, docids: parsedRankedList.docids.slice(0, outputLimit) }
+    : undefined;
+  const rankedListCountError =
+    rankedListCount && (rankedList?.docids.length ?? 0) < rankedListCount
+      ? `Expected ${rankedListCount} ranked docids but parsed ${rankedList?.docids.length ?? 0}.`
+      : undefined;
 
   return {
     metadata: {
@@ -971,6 +1058,14 @@ function finalizeRun(
       output_dir: outputDir,
       query,
       prompt_variant: piSearchPromptVariant,
+      output_mode: formatPiSearchOutputModes(outputModes),
+      output_modes: outputModes,
+      ranked_list_depth: hasPiSearchOutputMode(outputModes, "ranked_list")
+        ? rankedListDepth
+        : undefined,
+      ranked_list_count: hasPiSearchOutputMode(outputModes, "ranked_list")
+        ? rankedListCount
+        : undefined,
       tool_interface: toolInterface,
       search_backend_kind: searchBackendKind,
     },
@@ -983,6 +1078,9 @@ function finalizeRun(
     agent_docids: agentDocids,
     opened_docids: Array.from(state.openedDocids),
     cited_docids: citedDocids,
+    ranked_docids: rankedList?.docids,
+    ranked_list_parse_error: rankedList?.error,
+    ranked_list_count_error: rankedListCountError,
     stats: {
       elapsed_seconds: Number(elapsedSeconds.toFixed(3)),
       assistant_turns: state.assistantTurns,
@@ -1041,6 +1139,10 @@ function buildPersistedRunSetup(args: {
   indexPath: string;
   toolInterface: PiSearchToolInterface;
   searchBackendKind: string;
+  outputMode: string;
+  outputModes: PiSearchOutputModes;
+  rankedListDepth: number;
+  rankedListCount?: number;
 }): PersistedRunSetup {
   return {
     slice: args.querySetId,
@@ -1058,6 +1160,15 @@ function buildPersistedRunSetup(args: {
     shardRetryMode: resolveEnvValue("SHARD_RETRY_MODE"),
     toolInterface: args.toolInterface,
     searchBackendKind: args.searchBackendKind,
+    outputMode: args.outputMode,
+    outputModes: [...args.outputModes],
+    rankedListDepth: hasPiSearchOutputMode(args.outputModes, "ranked_list")
+      ? String(args.rankedListDepth)
+      : undefined,
+    rankedListCount:
+      hasPiSearchOutputMode(args.outputModes, "ranked_list") && args.rankedListCount
+        ? String(args.rankedListCount)
+        : undefined,
   };
 }
 
@@ -1098,6 +1209,13 @@ async function main() {
   console.log(`Using indexPath=${args.indexPath}`);
   console.log(`Using timeoutSeconds=${args.timeoutSeconds}`);
   console.log(`Using promptVariant=${args.piSearchPromptVariant}`);
+  console.log(`Using outputMode=${args.outputMode}`);
+  if (hasPiSearchOutputMode(args.outputModes, "ranked_list")) {
+    console.log(`Using rankedListDepth=${args.rankedListDepth}`);
+    if (args.rankedListCount) {
+      console.log(`Using rankedListCount=${args.rankedListCount}`);
+    }
+  }
   console.log(`Using toolInterface=${args.toolInterface}`);
   if (benchmarkManifestSnapshot.git_commit_short) {
     console.log(`Using gitCommit=${benchmarkManifestSnapshot.git_commit_short}`);
@@ -1122,6 +1240,10 @@ async function main() {
         indexPath: args.indexPath,
         toolInterface: args.toolInterface,
         searchBackendKind,
+        outputMode: args.outputMode,
+        outputModes: args.outputModes,
+        rankedListDepth: args.rankedListDepth,
+        rankedListCount: args.rankedListCount,
       }),
       null,
       2,
@@ -1141,6 +1263,13 @@ async function main() {
       benchmarkId: args.benchmarkId,
       querySetId: args.querySetId,
       promptVariant: args.piSearchPromptVariant,
+      outputMode: args.outputMode,
+      rankedListDepth: hasPiSearchOutputMode(args.outputModes, "ranked_list")
+        ? args.rankedListDepth
+        : undefined,
+      rankedListCount: hasPiSearchOutputMode(args.outputModes, "ranked_list")
+        ? args.rankedListCount
+        : undefined,
       toolInterface: args.toolInterface,
       searchBackendKind,
       timeoutSeconds: args.timeoutSeconds,
@@ -1210,7 +1339,14 @@ async function main() {
           model: args.model,
           thinking: args.thinking,
           extensionPath: args.extensionPath,
-          prompt: formatPrompt(query, args.piSearchPromptVariant),
+          prompt: formatPrompt(
+            query,
+            args.piSearchPromptVariant,
+            args.outputModes,
+            args.toolInterface,
+            args.rankedListDepth,
+            args.rankedListCount,
+          ),
           queryId,
           timeoutSeconds: args.timeoutSeconds,
           isolatedAgentDir,
@@ -1230,6 +1366,9 @@ async function main() {
           args.model,
           args.outputDir,
           args.piSearchPromptVariant,
+          args.outputModes,
+          args.rankedListDepth,
+          args.rankedListCount,
           args.toolInterface,
           searchBackendKind,
           phase.state,
@@ -1256,6 +1395,9 @@ async function main() {
             args.model,
             args.outputDir,
             args.piSearchPromptVariant,
+            args.outputModes,
+            args.rankedListDepth,
+            args.rankedListCount,
             args.toolInterface,
             searchBackendKind,
             error.details.state,
@@ -1274,6 +1416,9 @@ async function main() {
             args.model,
             args.outputDir,
             args.piSearchPromptVariant,
+            args.outputModes,
+            args.rankedListDepth,
+            args.rankedListCount,
             args.toolInterface,
             searchBackendKind,
             createQueryRunAccumulator(),
@@ -1314,6 +1459,12 @@ async function main() {
   }
 
   const finalRunning = formatRunningRecall(runningRecall);
+  if (hasPiSearchOutputMode(args.outputModes, "ranked_list")) {
+    const trecRun = writeRankedListTrecRunFile({ runDir: args.outputDir });
+    console.log(
+      `Wrote ranked-list TREC run file ${trecRun.outputPath} queries=${trecRun.queryCount} lines=${trecRun.lineCount}`,
+    );
+  }
   console.log(
     `Finished ${runningRecall.processedQueries}/${queries.length} queries running_macro=${finalRunning.macro.toFixed(4)} running_micro=${finalRunning.micro.toFixed(4)} hits=${runningRecall.totalHits}/${runningRecall.totalGold} ${finalRunning.statusSummary}`,
   );
