@@ -31,6 +31,7 @@ export type BenchmarkQuerySetLaunchArgs = {
   queryPath?: string;
   qrelsPath?: string;
   indexPath?: string;
+  suppliedDocBundlePath?: string;
   outputMode?: string;
   toolInterface?: string;
   rankedListDepth?: number;
@@ -50,6 +51,7 @@ export type BenchmarkQuerySetLaunchPlan = {
   queryPath: string;
   qrelsPath: string;
   indexPath: string;
+  suppliedDocBundlePath?: string;
   outputMode: string;
   outputModes: PiSearchOutputModes;
   toolInterface: PiSearchToolInterface;
@@ -182,6 +184,7 @@ export function resolveBenchmarkQuerySetLaunchPlan(
     queryPath: config.queryPath,
     qrelsPath: config.qrelsPath,
     indexPath: config.indexPath,
+    suppliedDocBundlePath: args.suppliedDocBundlePath ?? readEnv("SUPPLIED_DOC_BUNDLE"),
     outputMode: formatPiSearchOutputModes(outputModes),
     outputModes,
     toolInterface,
@@ -210,6 +213,7 @@ export function buildBenchmarkQuerySetLaunchEnv(
     EXTENSION: plan.extensionPath,
     PI_BM25_INDEX_PATH: plan.indexPath,
     PROMPT_VARIANT: plan.piSearchPromptVariant,
+    ...(plan.suppliedDocBundlePath ? { SUPPLIED_DOC_BUNDLE: plan.suppliedDocBundlePath } : {}),
     PI_SEARCH_TOOL_INTERFACE: plan.toolInterface,
     OUTPUT_MODE: plan.outputMode,
     RANKED_LIST_DEPTH: String(plan.rankedListDepth),
@@ -218,7 +222,7 @@ export function buildBenchmarkQuerySetLaunchEnv(
 }
 
 export function buildRunPiBenchmarkCommand(plan: BenchmarkQuerySetLaunchPlan): string[] {
-  return buildTsxCommand("src/orchestration/run_pi_benchmark.ts", [
+  const command = buildTsxCommand("src/orchestration/run_pi_benchmark.ts", [
     "--benchmark",
     plan.benchmarkId,
     "--querySet",
@@ -247,6 +251,10 @@ export function buildRunPiBenchmarkCommand(plan: BenchmarkQuerySetLaunchPlan): s
     String(plan.rankedListDepth),
     ...(plan.rankedListCount ? ["--rankedListCount", String(plan.rankedListCount)] : []),
   ]);
+  if (plan.suppliedDocBundlePath) {
+    command.push("--supplied-doc-bundle", plan.suppliedDocBundlePath);
+  }
+  return command;
 }
 
 export function printBenchmarkQuerySetLaunchPlan(plan: BenchmarkQuerySetLaunchPlan): void {
@@ -267,4 +275,7 @@ export function printBenchmarkQuerySetLaunchPlan(plan: BenchmarkQuerySetLaunchPl
   console.log(`OUTPUT_DIR=${plan.outputDir}`);
   console.log(`TIMEOUT_SECONDS=${plan.timeoutSeconds}`);
   console.log(`INDEX_PATH=${plan.indexPath}`);
+  if (plan.suppliedDocBundlePath) {
+    console.log(`SUPPLIED_DOC_BUNDLE=${plan.suppliedDocBundlePath}`);
+  }
 }

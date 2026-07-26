@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   buildBenchmarkQuerySetLaunchEnv,
+  buildRunPiBenchmarkCommand,
   resolveBenchmarkQuerySetLaunchPlan,
 } from "../src/orchestration/benchmark_query_set_launch";
 
@@ -112,4 +113,17 @@ void test("benchmark launch composes answer and ranked-list outputs", () => {
   assert.deepEqual(plan.outputModes, ["answer", "ranked_list"]);
   assert.equal(env.OUTPUT_MODE, "answer+ranked_list");
   assert.equal(env.RANKED_LIST_DEPTH, "25");
+});
+
+void test("benchmark query-set launch plan propagates supplied document bundle", () => {
+  const plan = resolveBenchmarkQuerySetLaunchPlan({
+    benchmarkId: "benchmark-template",
+    querySetId: "test",
+    suppliedDocBundlePath: "data/supplied-docs/test.jsonl",
+  });
+  const env = buildBenchmarkQuerySetLaunchEnv(plan, {});
+  const command = buildRunPiBenchmarkCommand(plan);
+
+  assert.equal(env.SUPPLIED_DOC_BUNDLE, "data/supplied-docs/test.jsonl");
+  assert.deepEqual(command.slice(-2), ["--supplied-doc-bundle", "data/supplied-docs/test.jsonl"]);
 });
