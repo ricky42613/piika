@@ -52,6 +52,30 @@ function parseArgs(argv: string[]): Args {
         args.promptVariant = next;
         index += 1;
         break;
+      case "--outputMode":
+      case "--output-mode":
+        if (!next) throw new Error(`${arg} requires a value`);
+        args.outputMode = next;
+        index += 1;
+        break;
+      case "--toolInterface":
+      case "--tool-interface":
+        if (!next) throw new Error(`${arg} requires a value`);
+        args.toolInterface = next;
+        index += 1;
+        break;
+      case "--rankedListDepth":
+      case "--ranked-list-depth":
+        if (!next) throw new Error(`${arg} requires a value`);
+        args.rankedListDepth = parseInteger(next, "rankedListDepth");
+        index += 1;
+        break;
+      case "--rankedListCount":
+      case "--ranked-list-count":
+        if (!next) throw new Error(`${arg} requires a value`);
+        args.rankedListCount = parseInteger(next, "rankedListCount");
+        index += 1;
+        break;
       case "--outputDir":
       case "--output-dir":
         if (!next) throw new Error(`${arg} requires a value`);
@@ -97,6 +121,11 @@ function parseArgs(argv: string[]): Args {
         args.indexPath = next;
         index += 1;
         break;
+      case "--supplied-doc-bundle":
+        if (!next) throw new Error(`${arg} requires a value`);
+        args.suppliedDocBundlePath = next;
+        index += 1;
+        break;
       case "--dryRun":
       case "--dry-run":
         args.dryRun = true;
@@ -130,6 +159,10 @@ Options:
   --query-set <id>               Query set id for the selected benchmark (default: benchmark default query set)
   --model <model>
   --prompt-variant <variant>
+  --output-mode <answer|ranked_list|answer+ranked_list>
+  --tool-interface <pyserini-rest-2tool|pi-serini-3tool>
+  --ranked-list-depth <n>        Max requested ranked-list length (default: 1000)
+  --ranked-list-count <n>        Require exactly this many ranked docids
   --output-dir <dir>
   --timeout-seconds <seconds>
   --thinking <level>
@@ -138,6 +171,7 @@ Options:
   --query-file <path>            Explicit override; wins over benchmark defaults
   --qrels <path>                 Explicit override; wins over benchmark defaults
   --index-path <path>            Explicit override; wins over benchmark defaults
+  --supplied-doc-bundle <path>   JSONL bundle of supplied documents grouped per query
   --dry-run
 
 Benchmarks:

@@ -627,6 +627,10 @@ void test("node low-level benchmark entrypoint resolves manifest-aligned default
     "300",
     "--promptVariant",
     "plain_minimal",
+    "--outputMode",
+    "answer",
+    "--rankedListDepth",
+    "1000",
   ]);
 });
 
@@ -752,6 +756,36 @@ void test("node benchmark query-set entrypoint resolves manifest-aligned default
     "300",
     "--promptVariant",
     "plain_minimal",
+    "--outputMode",
+    "answer",
+    "--rankedListDepth",
+    "1000",
+  ]);
+});
+
+void test("node benchmark query-set entrypoint forwards supplied document bundle", () => {
+  const output = execFileSync(
+    "npx",
+    [
+      "tsx",
+      "src/orchestration/query_set.ts",
+      "--dry-run",
+      "--benchmark",
+      "benchmark-template",
+      "--supplied-doc-bundle",
+      "data/supplied-docs/dev.jsonl",
+    ],
+    {
+      cwd: process.cwd(),
+      env: process.env,
+      encoding: "utf8",
+    },
+  );
+
+  assert.match(output, /SUPPLIED_DOC_BUNDLE=data\/supplied-docs\/dev\.jsonl/);
+  assert.deepEqual(parseCommandJson(output).slice(-2), [
+    "--supplied-doc-bundle",
+    "data/supplied-docs/dev.jsonl",
   ]);
 });
 

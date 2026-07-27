@@ -67,7 +67,69 @@ Pi packages now live under the `@earendil-works/*` npm namespace. This repo depe
 Model note: `gpt-5.3-codex` was used for some historical judge runs, but OpenAI's Codex model documentation now lists it as deprecated when signing in with ChatGPT. Use the current recommended Codex models for new subscription-backed runs, and label any replacement judge model explicitly in reports.
 - 2026-06-26: Default judge model updated to gpt-5.5. 
 
+- 2026-06-26: Default judge model updated to gpt-5.5.
+
 ## Quickstart
+
+### Use Castorini prebuilt assets
+
+Piika reads the live Castorini catalogs instead of keeping a handwritten list of indexes, topics,
+and qrels. Search them, then install any compatible combination:
+
+```bash
+piika prebuilt indexes msmarco-v1-passage
+piika prebuilt topics dl19
+piika prebuilt qrels dl19
+piika prebuilt setup msmarco-v1-passage --topics dl19-passage
+piika prebuilt setup msmarco-v2-passage --topics dl21 --qrels dl21-passage
+piika run --benchmark prebuilt-msmarco-v1-passage-dl19-passage
+```
+
+`prebuilt setup` downloads and verifies the selected index, downloads the official Anserini topics
+and qrels, normalizes supported topic formats into piika's TSV query format, and writes an installed
+benchmark manifest under `data/prebuilt/`. Installed manifests are discovered automatically by all
+normal benchmark commands. Use `--qrels <id>` when the desired qrels do not share the topic ID or
+one of its upstream aliases, and `--dry-run` to inspect paths and URLs without downloading assets.
+
+The local BM25 backend accepts upstream catalog entries with type `inverted`. TSV, JSONL, and
+classic TREC topic readers are normalized directly; piika reports a clear error for specialized
+Anserini topic readers that do not yet have a lossless converter. Index downloads are atomic,
+checksum-verified, and retried against the mirrors published in the upstream catalog.
+
+### Install a custom benchmark manifest
+
+Datasets that only need different queries, qrels, ground truth, index paths, aliases, or evaluation
+defaults do not need a TypeScript registry entry. Define a `BenchmarkDefinition` as JSON and install
+it into Piika's dynamic manifest directory:
+
+```bash
+npm run install:benchmark-manifest -- \
+  --manifest path/to/benchmark.json \
+  --dry-run
+
+npm run install:benchmark-manifest -- \
+  --manifest path/to/benchmark.json
+```
+
+The installer validates the manifest and writes
+`data/prebuilt/<benchmark-id>/benchmark.json`. Reinstalling identical content is a no-op; replacing
+different content requires an explicit `--force`. Set `PIIKA_BENCHMARKS_DIR` or pass `--root` to
+use a different manifest directory.
+
+For datasets with multiple acceptable answers per question, adapt source JSONL into Piika's
+ground-truth format:
+
+```bash
+npm run adapt:multi-answer-ground-truth -- \
+  --queries data/custom/queries.tsv \
+  --answers data/custom/source/answers.jsonl \
+  --output data/custom/ground-truth/answers.jsonl \
+  --id-field qid \
+  --answers-field answer
+```
+
+The source id and answers field names are configurable. Answer arrays are deduplicated and judged
+so that matching any acceptable alternative counts as correct.
 
 ### 1. Set up benchmark assets
 
@@ -137,6 +199,90 @@ QUERY_SET=test \
 MODEL=openai-codex/gpt-5.4-mini \
 npm run run:benchmark:query-set
 ```
+
+To inject supplied evidence directly into each query prompt, pass a JSONL bundle with one row per query:
+
+```bash
+BENCHMARK=benchmark-template \
+QUERY_SET=test \
+MODEL=openai-codex/gpt-5.4-mini \
+npm run run:benchmark:query-set -- --supplied-doc-bundle data/my-run/supplied-docs.jsonl
+```
+
+Rows use `{ "qid", "question", "groups": [{ "docs": [{ "doc_id", "cited_snippet", "full_text" }] }] }`. Supplied document ids are recorded in run metadata and counted in surfaced, previewed, and agent-visible retrieval views. See [docs/running-benchmarks.md](docs/running-benchmarks.md#supplied-document-bundles) for details.
+
+Benchmark launches default to the direct `pyserini-rest-2tool` interface: `search` returns
+ranked hits directly and `read_document` opens a selected document. This interface is also used
+when the configured backend is local Anserini BM25; the name describes the two-tool contract, not
+a requirement that the backend be remote. To reproduce the cached-search pagination condition,
+opt in explicitly with `PI_SEARCH_TOOL_INTERFACE=pi-serini-3tool` or
+`--tool-interface pi-serini-3tool`.
+
+### Ranked-list output mode
+
+For traditional retrieval benchmarks, set `OUTPUT_MODE=ranked_list` to ask the agent to return a single ranked docid list instead of a final answer. Each per-query JSON records `ranked_docids`, and the run directory receives `ranked_list.trec` for standard qrels-based evaluation.
+
+```bash
+OUTPUT_MODE=ranked_list \
+RANKED_LIST_DEPTH=1000 \
+BENCHMARK=msmarco-v1-passage \
+QUERY_SET=dl20 \
+MODEL=openai-codex/gpt-5.4-mini \
+npm run run:benchmark:query-set:shared-bm25
+```
+
+To request an exact-size ranking, set `RANKED_LIST_COUNT` in addition to the maximum
+depth. For example, this asks the agent for exactly 30 unique docids:
+
+```bash
+OUTPUT_MODE=ranked_list \
+RANKED_LIST_DEPTH=30 \
+RANKED_LIST_COUNT=30 \
+BENCHMARK=msmarco-v1-passage \
+QUERY_SET=dl20 \
+npm run run:benchmark:query-set:shared-bm25
+```
+
+The equivalent CLI option is `--ranked-list-count 30`. Outputs longer than the requested
+count are truncated. Shorter outputs are preserved and marked with
+`ranked_list_count_error` in the per-query JSON; Piika does not silently pad the ranking
+with documents the agent did not select.
+
+Omitting `RANKED_LIST_COUNT` is intentional and remains the default. In that condition,
+`RANKED_LIST_DEPTH` is only a maximum and the agent chooses the final list length. Exact count is
+not merely output formatting: a DL19 ablation found that requiring exactly 10 documents reduced
+search effort and lowered nDCG@10 relative to an otherwise matched optional-count run. Treat an
+exact count as an experimental retrieval constraint, not as a harmless serialization option. See
+the [recorded ablation](docs/msmarco-v1-passage-ranked-list-results.md#exact-count-ablation-on-dl19).
+
+Evaluate the generated run file with the existing trec_eval wrapper:
+
+```bash
+npx tsx src/evaluation/eval_retrieval_trec_eval.ts \
+  --benchmark msmarco-v1-passage \
+  --query-set dl20 \
+  --run-file runs/<run>/ranked_list.trec
+```
+
+The reproducible MS MARCO comparison protocol and recorded GPT-5.5 results are tracked in
+[`docs/msmarco-v1-passage-ranked-list-results.md`](docs/msmarco-v1-passage-ranked-list-results.md).
+
+### Composing answer and ranked-list outputs
+
+Output modes are atomic and composable. To have one agent research a query once and return both
+an answer and a document ranking, join the modes with `+`:
+
+```bash
+OUTPUT_MODE=answer+ranked_list \
+RANKED_LIST_DEPTH=30 \
+npm run run:benchmark:query-set -- --benchmark benchmark-template
+```
+
+The response contains an `Answer` section followed by a `Ranked List` section. Per-query JSON keeps
+the assistant response for answer evaluation and records `ranked_docids`; the run also produces
+`ranked_list.trec`. Internally this is the composition of the `answer` and `ranked_list` capabilities,
+not a separate third mode. A comma (`answer,ranked_list`) is also accepted and normalized to the
+canonical `answer+ranked_list` form.
 
 ### BM25 tuning during benchmark runs
 
@@ -285,6 +431,7 @@ Legacy shell scripts under `scripts/` still work, but they are compatibility shi
 - `src/legacy/` — compatibility-only TypeScript entrypoints that are still intentionally preserved for historical low-level contracts
 - `src/runtime/` — shared runtime primitives such as prompt construction, artifact-path helpers, and isolated agent-dir handling
 - `src/benchmarks/` — typed benchmark definitions, registry helpers, run-manifest snapshot logic
+- `src/adapters/` — reusable import and ground-truth normalization adapters
 - `src/wrappers/` — downstream summarize/eval/report wrapper entrypoints and precedence helpers
 - `src/operator/` — monitor, supervisor, TUI, and benchctl operator surfaces
 - `src/evaluation/` — retrieval and judge evaluation backends plus metric helpers
@@ -299,6 +446,7 @@ Legacy shell scripts under `scripts/` still work, but they are compatibility shi
 - `runs/` — benchmark run outputs
 - `evals/` — evaluation outputs
 - `notes/` — local notes and experiment writeups
+- `.agents/skills/` — versioned Codex skills for general Piika and benchmark-specific workflows
 
 ## Read more
 
@@ -308,6 +456,8 @@ Legacy shell scripts under `scripts/` still work, but they are compatibility shi
 - [Evaluation semantics](docs/evaluation.md)
 - [Reproducibility](docs/reproducibility.md)
 - [Adding a benchmark](docs/adding-a-benchmark.md)
+- [General Piika agent skill](.agents/skills/use-piika/SKILL.md)
+- [NanoKnow agent skill](.agents/skills/run-piika-nanoknow/SKILL.md)
 - [BM25 backend interface](docs/bm25-extension-interface.md)
 - Released Run on BrowseComp-Plus (Canary to prevent leakage: `piserini-a-minimal-search-agent`)
   - [piika w/ DeepSeek V4 Flash](https://huggingface.co/datasets/ricky42613/piserini_bcp_deepseekv4_flash)

@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { attachJsonlLineReader } from "../runtime/jsonl";
 import {
   buildAnseriniBm25TcpExtensionConfig,
+  buildPyseriniRestExtensionConfig,
   parsePiSearchExtensionConfig,
   type PiSearchExtensionConfig,
 } from "../pi-search/config";
@@ -23,13 +24,30 @@ import {
 } from "../pi-search/protocol/tool_result_details";
 import { startBm25ServerTcp } from "../search-providers/anserini/bm25_server_process";
 import { prepareIsolatedAgentDir } from "../runtime/pi_agent_dir";
-import { formatPiSearchPrompt, type PiSearchPromptVariant } from "../pi-search/agent_prompt";
+import {
+  formatPiSearchPromptWithSuppliedContext,
+  formatPiSearchOutputModes,
+  formatPiSearchPrompt,
+  hasPiSearchOutputMode,
+  parsePiSearchOutputModes,
+  type PiSearchOutputModes,
+  type PiSearchPromptVariant,
+} from "../pi-search/agent_prompt";
 import type { PiSearchToolInterface } from "../pi-search/extension";
+import {
+  DEFAULT_PI_SEARCH_TOOL_INTERFACE,
+  parsePiSearchToolInterface,
+} from "../pi-search/tool_interface";
 import { resolveGitCommitProvenance } from "../runtime/git";
 import { startPiJsonProcess, startPiProcessTimeout } from "../runtime/pi_process";
 import { parsePiEventJsonLine, type PiEvent } from "../runtime/pi_json_protocol";
 import { QueryResultSpool, type QueryNormalizedResult } from "./query_result_spool";
 import { extractCitationsFromText } from "../evaluation/run_docid_views";
+import {
+  DEFAULT_RANKED_LIST_DEPTH,
+  parseRankedDocidsFromAssistantText,
+  writeRankedListTrecRunFile,
+} from "../evaluation/ranked_list_output";
 import {
   createBenchmarkManifestSnapshot,
   getDefaultBenchmarkId,
@@ -46,10 +64,15 @@ type BenchmarkRun = {
     output_dir: string;
     query: string;
     prompt_variant: PiSearchPromptVariant;
+    output_mode: string;
+    output_modes: PiSearchOutputModes;
+    ranked_list_depth?: number;
+    ranked_list_count?: number;
     tool_interface?: PiSearchToolInterface;
     search_backend_kind?: string;
     bm25_search_tool_mode?: string;
     bm25_render_excerpts?: string;
+    supplied_docids?: string[];
   };
   query_id: string;
   tool_call_counts: Record<string, number>;
@@ -60,6 +83,9 @@ type BenchmarkRun = {
   agent_docids: string[];
   opened_docids: string[];
   cited_docids: string[];
+  ranked_docids?: string[];
+  ranked_list_parse_error?: string;
+  ranked_list_count_error?: string;
   stats: {
     elapsed_seconds: number;
     assistant_turns: number;
@@ -92,6 +118,7 @@ type PersistedRunSetup = {
   model?: string;
   queryFile?: string;
   qrelsFile?: string;
+  suppliedDocBundle?: string;
   shardCount?: string;
   totalQueries?: string;
   timeoutSeconds?: string;
@@ -103,6 +130,10 @@ type PersistedRunSetup = {
   shardRetryMode?: string;
   toolInterface?: string;
   searchBackendKind?: string;
+  outputMode?: string;
+  outputModes?: string[];
+  rankedListDepth?: string;
+  rankedListCount?: string;
 };
 
 type RunPiOptions = {
@@ -115,6 +146,30 @@ type RunPiOptions = {
   timeoutSeconds: number;
   isolatedAgentDir: string;
   extraEnv?: Record<string, string>;
+};
+
+type QueryWithSuppliedContext = {
+  queryId: string;
+  query: string;
+  suppliedContext?: string;
+  suppliedDocids?: string[];
+};
+
+type SuppliedDocBundleDoc = {
+  doc_id?: unknown;
+  cited_snippet?: unknown;
+  full_text?: unknown;
+};
+
+type SuppliedDocBundleGroup = {
+  docs?: unknown;
+};
+
+type SuppliedDocBundleRow = {
+  qid?: unknown;
+  question?: unknown;
+  groups?: unknown;
+  all_doc_ids?: unknown;
 };
 
 type Bm25RpcConnection = {
@@ -171,8 +226,8 @@ const DEFAULT_BENCHMARK_ID = getDefaultBenchmarkId();
 const DEFAULT_INDEX_PATH = resolveBenchmarkConfig({ benchmarkId: DEFAULT_BENCHMARK_ID }).indexPath;
 
 function getExternalBm25RpcConnection(): Bm25RpcConnection | null {
-  const host = process.env.PI_BM25_RPC_HOST?.trim();
-  const rawPort = process.env.PI_BM25_RPC_PORT?.trim();
+  const host = readEnv("PI_BM25_RPC_HOST");
+  const rawPort = readEnv("PI_BM25_RPC_PORT");
   if (!host && !rawPort) {
     return null;
   }
@@ -195,6 +250,51 @@ function getExternalBm25RpcConnection(): Bm25RpcConnection | null {
       // External daemon lifecycle is managed by the caller.
     },
   };
+}
+
+function readEnv(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value ? value : undefined;
+}
+
+function parseOptionalIntegerEnv(name: string): number | undefined {
+  const value = readEnv(name);
+  if (!value) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive integer; received ${value}`);
+  }
+  return parsed;
+}
+
+function parsePyseriniRestReadMode(value: string | undefined): "full" | "paginated" | undefined {
+  if (!value) return undefined;
+  if (value === "full" || value === "paginated") return value;
+  throw new Error(`PYSERINI_REST_READ_MODE must be "full" or "paginated"; received ${value}`);
+}
+
+function getPyseriniRestEnvShortcutConfig(): PiSearchExtensionConfig | null {
+  const baseUrl = readEnv("PYSERINI_REST_BASE_URL");
+  const index = readEnv("PYSERINI_REST_INDEX");
+  if (!baseUrl && !index) {
+    return null;
+  }
+  if (!baseUrl || !index) {
+    throw new Error(
+      "PYSERINI_REST_BASE_URL and PYSERINI_REST_INDEX must both be set to use the Pyserini REST backend shortcut.",
+    );
+  }
+
+  const tokenEnv =
+    readEnv("PYSERINI_REST_TOKEN_ENV") ??
+    (readEnv("PYSERINI_API_TOKEN") ? "PYSERINI_API_TOKEN" : undefined);
+  return buildPyseriniRestExtensionConfig({
+    baseUrl,
+    index,
+    tokenEnv,
+    searchMaxDocLength: parseOptionalIntegerEnv("PYSERINI_REST_SEARCH_MAX_DOC_LENGTH"),
+    readMode: parsePyseriniRestReadMode(readEnv("PYSERINI_REST_READ_MODE") ?? "paginated"),
+  });
 }
 
 async function getBm25RpcConnection(cwd: string): Promise<Bm25RpcConnection> {
@@ -242,6 +342,19 @@ async function getSearchBackendConnection(cwd: string): Promise<SearchBackendCon
       };
     }
   }
+  const pyseriniRestConfig = getPyseriniRestEnvShortcutConfig();
+  if (pyseriniRestConfig) {
+    return {
+      kind: "external-config",
+      env: {
+        PI_SEARCH_EXTENSION_CONFIG: JSON.stringify(pyseriniRestConfig),
+      },
+      config: pyseriniRestConfig,
+      stop: async () => {
+        // External backends are owned by the caller.
+      },
+    };
+  }
 
   const bm25 = await getBm25RpcConnection(cwd);
   const config = buildAnseriniBm25TcpExtensionConfig({
@@ -255,17 +368,16 @@ async function getSearchBackendConnection(cwd: string): Promise<SearchBackendCon
   };
 }
 
-function parseToolInterface(value: string | undefined): PiSearchToolInterface {
-  const raw = value?.trim() || "pi-serini-3tool";
-  if (raw === "pi-serini-3tool" || raw === "pyserini-rest-2tool") {
-    return raw;
-  }
-  throw new Error(
-    `Invalid tool interface ${raw}. Expected pi-serini-3tool or pyserini-rest-2tool.`,
-  );
-}
-
 const PROMPT_VARIANTS: PiSearchPromptVariant[] = ["plain_minimal"];
+function parsePositiveInteger(value: string | undefined, label: string, fallback: number): number {
+  const raw = value?.trim();
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${label} must be a positive integer; received ${raw}`);
+  }
+  return parsed;
+}
 
 function parseArgs(argv: string[]) {
   const out: Record<string, string> = {
@@ -277,16 +389,33 @@ function parseArgs(argv: string[]) {
     pi: "pi",
     limit: "0",
     timeoutSeconds: "900",
-    toolInterface: process.env.PI_SEARCH_TOOL_INTERFACE?.trim() || "pi-serini-3tool",
+    suppliedDocBundle: process.env.SUPPLIED_DOC_BUNDLE?.trim() || "",
+    toolInterface: process.env.PI_SEARCH_TOOL_INTERFACE?.trim() || DEFAULT_PI_SEARCH_TOOL_INTERFACE,
+    outputMode: process.env.OUTPUT_MODE?.trim() || "answer",
+    rankedListDepth: process.env.RANKED_LIST_DEPTH?.trim() || String(DEFAULT_RANKED_LIST_DEPTH),
+    rankedListCount: process.env.RANKED_LIST_COUNT?.trim() || "",
   };
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (!arg.startsWith("--")) continue;
-    const key = arg.slice(2);
+    const rawKey = arg.slice(2);
+    const normalizedKey = rawKey.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
+    const key =
+      normalizedKey === "queryFile"
+        ? "query"
+        : normalizedKey === "outputDir"
+          ? "outputDir"
+          : normalizedKey === "promptVariant"
+            ? "promptVariant"
+            : normalizedKey === "timeoutSeconds"
+              ? "timeoutSeconds"
+              : normalizedKey === "indexPath"
+                ? "indexPath"
+                : normalizedKey;
     const value = argv[i + 1];
     if (!value || value.startsWith("--")) {
-      throw new Error(`Missing value for --${key}`);
+      throw new Error(`Missing value for --${rawKey}`);
     }
     out[key] = value;
     i += 1;
@@ -297,7 +426,7 @@ function parseArgs(argv: string[]) {
     querySetId: out.querySet,
     queryPath: out.query,
     qrelsPath: out.qrels,
-    indexPath: process.env.PI_BM25_INDEX_PATH?.trim() || undefined,
+    indexPath: out.indexPath ?? process.env.PI_BM25_INDEX_PATH?.trim() ?? undefined,
   });
   const piSearchPromptVariant = (out.promptVariant ??
     benchmarkConfig.benchmark.piSearchPromptVariant) as PiSearchPromptVariant;
@@ -307,6 +436,21 @@ function parseArgs(argv: string[]) {
     );
   }
 
+  const rankedListDepth = parsePositiveInteger(
+    out.rankedListDepth,
+    "rankedListDepth",
+    DEFAULT_RANKED_LIST_DEPTH,
+  );
+  const rankedListCount = out.rankedListCount
+    ? parsePositiveInteger(out.rankedListCount, "rankedListCount", rankedListDepth)
+    : undefined;
+  if (rankedListCount && rankedListCount > rankedListDepth) {
+    throw new Error(
+      `rankedListCount (${rankedListCount}) cannot exceed rankedListDepth (${rankedListDepth})`,
+    );
+  }
+
+  const outputModes = parsePiSearchOutputModes(out.outputMode);
   return {
     benchmarkId: benchmarkConfig.benchmark.id,
     querySetId: benchmarkConfig.querySetId,
@@ -321,11 +465,16 @@ function parseArgs(argv: string[]) {
     limit: Number.parseInt(out.limit, 10),
     timeoutSeconds: Number.parseInt(out.timeoutSeconds, 10),
     piSearchPromptVariant,
-    toolInterface: parseToolInterface(out.toolInterface),
+    suppliedDocBundlePath: out.suppliedDocBundle ? resolve(out.suppliedDocBundle) : undefined,
+    outputMode: formatPiSearchOutputModes(outputModes),
+    outputModes,
+    rankedListDepth,
+    rankedListCount,
+    toolInterface: parsePiSearchToolInterface(out.toolInterface),
   };
 }
 
-function readQueries(tsvPath: string): Array<{ queryId: string; query: string }> {
+function readQueries(tsvPath: string): QueryWithSuppliedContext[] {
   const text = readFileSync(tsvPath, "utf8");
   return text
     .split(/\r?\n/)
@@ -342,8 +491,96 @@ function readQueries(tsvPath: string): Array<{ queryId: string; query: string }>
     });
 }
 
-function formatPrompt(query: string, variant: PiSearchPromptVariant): string {
-  return formatPiSearchPrompt(query, variant);
+function assertString(value: unknown, label: string, lineNumber: number): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(
+      `Invalid supplied document bundle line ${lineNumber}: ${label} must be a non-empty string`,
+    );
+  }
+  return value;
+}
+
+function parseSuppliedDocBundleRow(rawLine: string, lineNumber: number): QueryWithSuppliedContext {
+  const parsed = JSON.parse(rawLine) as SuppliedDocBundleRow;
+  const queryId = assertString(parsed.qid, "qid", lineNumber);
+  const query = assertString(parsed.question, "question", lineNumber);
+  if (!Array.isArray(parsed.groups)) {
+    throw new Error(`Invalid supplied document bundle line ${lineNumber}: groups must be an array`);
+  }
+
+  const suppliedDocids = new Set<string>();
+  const sections: string[] = [
+    "Provided documents:",
+    "These documents are grouped by document group. Treat them as supplied evidence, but do not assume they are sufficient or perfectly complete. You may use the search tools to look up additional evidence when the supplied documents leave a gap.",
+  ];
+
+  for (const [groupIndex, rawGroup] of parsed.groups.entries()) {
+    const group = rawGroup as SuppliedDocBundleGroup;
+    if (!Array.isArray(group.docs)) {
+      throw new Error(
+        `Invalid supplied document bundle line ${lineNumber}: groups[${groupIndex}].docs must be an array`,
+      );
+    }
+    sections.push(``, `Document group ${groupIndex + 1}:`);
+    for (const [docIndex, rawDoc] of group.docs.entries()) {
+      const doc = rawDoc as SuppliedDocBundleDoc;
+      const docid = assertString(
+        doc.doc_id,
+        `groups[${groupIndex}].docs[${docIndex}].doc_id`,
+        lineNumber,
+      );
+      const fullText =
+        typeof doc.full_text === "string" && doc.full_text.trim()
+          ? doc.full_text.trim()
+          : "(full_text was empty in the supplied document bundle)";
+      const citedSnippet =
+        typeof doc.cited_snippet === "string" && doc.cited_snippet.trim()
+          ? doc.cited_snippet.trim()
+          : "(no cited snippet provided)";
+      suppliedDocids.add(docid);
+      sections.push(
+        `Doc ${docIndex + 1} docid=${docid}`,
+        `Cited snippet: ${citedSnippet}`,
+        `Full text:`,
+        fullText,
+      );
+    }
+  }
+
+  return {
+    queryId,
+    query,
+    suppliedContext: sections.join("\n"),
+    suppliedDocids: Array.from(suppliedDocids),
+  };
+}
+
+function readSuppliedDocBundleQueries(jsonlPath: string): QueryWithSuppliedContext[] {
+  const text = readFileSync(jsonlPath, "utf8");
+  return text
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line, index) => parseSuppliedDocBundleRow(line, index + 1));
+}
+
+function formatPrompt(
+  query: string,
+  variant: PiSearchPromptVariant,
+  outputModes: PiSearchOutputModes,
+  toolInterface: PiSearchToolInterface,
+  rankedListDepth: number,
+  rankedListCount?: number,
+  suppliedContext?: string,
+): string {
+  const options = {
+    outputModes,
+    toolInterface,
+    rankedListDepth,
+    rankedListCount,
+  };
+  return suppliedContext
+    ? formatPiSearchPromptWithSuppliedContext(query, suppliedContext, options)
+    : formatPiSearchPrompt(query, variant, options);
 }
 
 function readEvidenceQrels(path: string): EvidenceQrels {
@@ -922,6 +1159,9 @@ function finalizeRun(
   model: string,
   outputDir: string,
   piSearchPromptVariant: PiSearchPromptVariant,
+  outputModes: PiSearchOutputModes,
+  rankedListDepth: number,
+  rankedListCount: number | undefined,
   toolInterface: PiSearchToolInterface,
   searchBackendKind: string,
   state: QueryRunAccumulator,
@@ -930,6 +1170,7 @@ function finalizeRun(
   exitCode: number | null,
   timedOut: boolean,
   elapsedSeconds: number,
+  suppliedDocids: string[] = [],
 ): BenchmarkRun {
   const finalizedResults = [...normalizedResults];
 
@@ -961,7 +1202,23 @@ function finalizeRun(
   const citedDocids = state.finalAssistantText
     ? extractCitationsFromText(state.finalAssistantText)
     : [];
-  const agentDocids = Array.from(new Set([...state.openedDocids, ...citedDocids]));
+  const agentDocids = Array.from(
+    new Set([...suppliedDocids, ...state.openedDocids, ...citedDocids]),
+  );
+  const surfacedDocids = Array.from(new Set([...suppliedDocids, ...state.surfacedDocids]));
+  const previewedDocids = Array.from(new Set([...suppliedDocids, ...state.previewedDocids]));
+  const parsedRankedList =
+    hasPiSearchOutputMode(outputModes, "ranked_list") && state.finalAssistantText
+      ? parseRankedDocidsFromAssistantText(state.finalAssistantText)
+      : undefined;
+  const outputLimit = rankedListCount ?? rankedListDepth;
+  const rankedList = parsedRankedList
+    ? { ...parsedRankedList, docids: parsedRankedList.docids.slice(0, outputLimit) }
+    : undefined;
+  const rankedListCountError =
+    rankedListCount && (rankedList?.docids.length ?? 0) < rankedListCount
+      ? `Expected ${rankedListCount} ranked docids but parsed ${rankedList?.docids.length ?? 0}.`
+      : undefined;
 
   return {
     metadata: {
@@ -971,18 +1228,30 @@ function finalizeRun(
       output_dir: outputDir,
       query,
       prompt_variant: piSearchPromptVariant,
+      output_mode: formatPiSearchOutputModes(outputModes),
+      output_modes: outputModes,
+      ranked_list_depth: hasPiSearchOutputMode(outputModes, "ranked_list")
+        ? rankedListDepth
+        : undefined,
+      ranked_list_count: hasPiSearchOutputMode(outputModes, "ranked_list")
+        ? rankedListCount
+        : undefined,
       tool_interface: toolInterface,
       search_backend_kind: searchBackendKind,
+      supplied_docids: suppliedDocids,
     },
     query_id: queryId,
     tool_call_counts: state.toolCallCounts,
     status,
     completion_source: completionSource,
-    surfaced_docids: Array.from(state.surfacedDocids),
-    previewed_docids: Array.from(state.previewedDocids),
+    surfaced_docids: surfacedDocids,
+    previewed_docids: previewedDocids,
     agent_docids: agentDocids,
     opened_docids: Array.from(state.openedDocids),
     cited_docids: citedDocids,
+    ranked_docids: rankedList?.docids,
+    ranked_list_parse_error: rankedList?.error,
+    ranked_list_count_error: rankedListCountError,
     stats: {
       elapsed_seconds: Number(elapsedSeconds.toFixed(3)),
       assistant_turns: state.assistantTurns,
@@ -1024,11 +1293,7 @@ function appendBenchmarkProgressEvent(event: BenchmarkProgressEvent): void {
 }
 
 function resolveEnvValue(name: string, fallback?: string): string | undefined {
-  const value = process.env[name]?.trim();
-  if (value) {
-    return value;
-  }
-  return fallback;
+  return readEnv(name) ?? fallback;
 }
 
 function buildPersistedRunSetup(args: {
@@ -1036,17 +1301,23 @@ function buildPersistedRunSetup(args: {
   model: string;
   queryPath: string;
   qrelsPath: string;
+  suppliedDocBundlePath?: string;
   totalQueries: number;
   timeoutSeconds: number;
   indexPath: string;
   toolInterface: PiSearchToolInterface;
   searchBackendKind: string;
+  outputMode: string;
+  outputModes: PiSearchOutputModes;
+  rankedListDepth: number;
+  rankedListCount?: number;
 }): PersistedRunSetup {
   return {
     slice: args.querySetId,
     model: args.model,
     queryFile: args.queryPath,
     qrelsFile: args.qrelsPath,
+    suppliedDocBundle: args.suppliedDocBundlePath,
     shardCount: resolveEnvValue("SHARD_COUNT"),
     totalQueries: String(args.totalQueries),
     timeoutSeconds: String(args.timeoutSeconds),
@@ -1058,6 +1329,15 @@ function buildPersistedRunSetup(args: {
     shardRetryMode: resolveEnvValue("SHARD_RETRY_MODE"),
     toolInterface: args.toolInterface,
     searchBackendKind: args.searchBackendKind,
+    outputMode: args.outputMode,
+    outputModes: [...args.outputModes],
+    rankedListDepth: hasPiSearchOutputMode(args.outputModes, "ranked_list")
+      ? String(args.rankedListDepth)
+      : undefined,
+    rankedListCount:
+      hasPiSearchOutputMode(args.outputModes, "ranked_list") && args.rankedListCount
+        ? String(args.rankedListCount)
+        : undefined,
   };
 }
 
@@ -1098,11 +1378,20 @@ async function main() {
   console.log(`Using indexPath=${args.indexPath}`);
   console.log(`Using timeoutSeconds=${args.timeoutSeconds}`);
   console.log(`Using promptVariant=${args.piSearchPromptVariant}`);
+  console.log(`Using outputMode=${args.outputMode}`);
+  if (hasPiSearchOutputMode(args.outputModes, "ranked_list")) {
+    console.log(`Using rankedListDepth=${args.rankedListDepth}`);
+    if (args.rankedListCount) {
+      console.log(`Using rankedListCount=${args.rankedListCount}`);
+    }
+  }
   console.log(`Using toolInterface=${args.toolInterface}`);
   if (benchmarkManifestSnapshot.git_commit_short) {
     console.log(`Using gitCommit=${benchmarkManifestSnapshot.git_commit_short}`);
   }
-  let queries = readQueries(args.queryPath);
+  let queries = args.suppliedDocBundlePath
+    ? readSuppliedDocBundleQueries(args.suppliedDocBundlePath)
+    : readQueries(args.queryPath);
   if (args.limit > 0) {
     queries = queries.slice(0, args.limit);
   }
@@ -1117,11 +1406,16 @@ async function main() {
         model: args.model,
         queryPath: args.queryPath,
         qrelsPath: args.qrelsPath,
+        suppliedDocBundlePath: args.suppliedDocBundlePath,
         totalQueries: queries.length,
         timeoutSeconds: args.timeoutSeconds,
         indexPath: args.indexPath,
         toolInterface: args.toolInterface,
         searchBackendKind,
+        outputMode: args.outputMode,
+        outputModes: args.outputModes,
+        rankedListDepth: args.rankedListDepth,
+        rankedListCount: args.rankedListCount,
       }),
       null,
       2,
@@ -1141,6 +1435,13 @@ async function main() {
       benchmarkId: args.benchmarkId,
       querySetId: args.querySetId,
       promptVariant: args.piSearchPromptVariant,
+      outputMode: args.outputMode,
+      rankedListDepth: hasPiSearchOutputMode(args.outputModes, "ranked_list")
+        ? args.rankedListDepth
+        : undefined,
+      rankedListCount: hasPiSearchOutputMode(args.outputModes, "ranked_list")
+        ? args.rankedListCount
+        : undefined,
       toolInterface: args.toolInterface,
       searchBackendKind,
       timeoutSeconds: args.timeoutSeconds,
@@ -1163,7 +1464,7 @@ async function main() {
   }
 
   try {
-    for (const [index, { queryId, query }] of queries.entries()) {
+    for (const [index, { queryId, query, suppliedContext, suppliedDocids }] of queries.entries()) {
       const outputPath = getOutputPath(args.outputDir, queryId);
       const rawEventsPath = getRawEventsPath(args.outputDir, queryId);
       const stderrPath = getStderrPath(args.outputDir, queryId);
@@ -1210,7 +1511,15 @@ async function main() {
           model: args.model,
           thinking: args.thinking,
           extensionPath: args.extensionPath,
-          prompt: formatPrompt(query, args.piSearchPromptVariant),
+          prompt: formatPrompt(
+            query,
+            args.piSearchPromptVariant,
+            args.outputModes,
+            args.toolInterface,
+            args.rankedListDepth,
+            args.rankedListCount,
+            suppliedContext,
+          ),
           queryId,
           timeoutSeconds: args.timeoutSeconds,
           isolatedAgentDir,
@@ -1230,6 +1539,9 @@ async function main() {
           args.model,
           args.outputDir,
           args.piSearchPromptVariant,
+          args.outputModes,
+          args.rankedListDepth,
+          args.rankedListCount,
           args.toolInterface,
           searchBackendKind,
           phase.state,
@@ -1238,6 +1550,7 @@ async function main() {
           phase.exitCode,
           phase.timedOut,
           phase.elapsedSeconds,
+          suppliedDocids ?? [],
         );
       } catch (error) {
         const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
@@ -1256,6 +1569,9 @@ async function main() {
             args.model,
             args.outputDir,
             args.piSearchPromptVariant,
+            args.outputModes,
+            args.rankedListDepth,
+            args.rankedListCount,
             args.toolInterface,
             searchBackendKind,
             error.details.state,
@@ -1264,6 +1580,7 @@ async function main() {
             error.details.exitCode,
             error.details.timedOut,
             error.details.elapsedSeconds,
+            suppliedDocids ?? [],
           );
         } else {
           run = finalizeRun(
@@ -1274,6 +1591,9 @@ async function main() {
             args.model,
             args.outputDir,
             args.piSearchPromptVariant,
+            args.outputModes,
+            args.rankedListDepth,
+            args.rankedListCount,
             args.toolInterface,
             searchBackendKind,
             createQueryRunAccumulator(),
@@ -1282,6 +1602,7 @@ async function main() {
             null,
             false,
             (Date.now() - queryStartedAt) / 1000,
+            suppliedDocids ?? [],
           );
         }
       }
@@ -1314,6 +1635,12 @@ async function main() {
   }
 
   const finalRunning = formatRunningRecall(runningRecall);
+  if (hasPiSearchOutputMode(args.outputModes, "ranked_list")) {
+    const trecRun = writeRankedListTrecRunFile({ runDir: args.outputDir });
+    console.log(
+      `Wrote ranked-list TREC run file ${trecRun.outputPath} queries=${trecRun.queryCount} lines=${trecRun.lineCount}`,
+    );
+  }
   console.log(
     `Finished ${runningRecall.processedQueries}/${queries.length} queries running_macro=${finalRunning.macro.toFixed(4)} running_micro=${finalRunning.micro.toFixed(4)} hits=${runningRecall.totalHits}/${runningRecall.totalGold} ${finalRunning.statusSummary}`,
   );
