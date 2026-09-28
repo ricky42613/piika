@@ -27,6 +27,8 @@ import type {
   ToolTimingBreakdown,
 } from "./tool_types";
 
+import type { DocumentFilter, FilterScore } from "./yes_no_filter";
+
 const SEARCH_QUERY_MODE = "plain";
 const SEARCH_CACHE_K = 1000;
 const SEARCH_FIRST_PAGE_LIMIT = 5;
@@ -42,6 +44,7 @@ type ToolHandlerDeps = {
   searchStore: SearchSessionStore;
   spillDir: ManagedTempSpillDir;
   nextSpillSequence: SpillSequence;
+  documentFilter?: DocumentFilter;
 };
 
 function formatReadDocumentText(parsed: {
@@ -182,7 +185,7 @@ export async function executeSearchTool(
 }
 
 export async function executeDirectSearchTool(
-  params: DirectSearchParams,
+  params: DirectSearchParams & { filter_question?: string },
   signal: AbortSignal | undefined,
   ctx: ToolExecutionContext,
   deps: ToolHandlerDeps,
@@ -195,6 +198,13 @@ export async function executeDirectSearchTool(
       "query must be a non-empty string.",
     );
   }
+  const filterQuestion = params.filter_question?.trim();
+  if (deps.documentFilter && !filterQuestion) {
+    throw new PiSearchInvalidToolArgumentsError(
+      "search arguments",
+      "filter_question must be a non-empty yes/no question.",
+    );
+  }
   const limit = normalizeDirectSearchLimit(params.hits);
   const response = await backend.search(
     {
@@ -204,18 +214,63 @@ export async function executeDirectSearchTool(
     signal,
   );
 
-  const renderedText = formatDirectSearchText({
-    rawQuery,
-    limit,
-    hits: response.hits,
-  });
+  const filterScores: Array<FilterScore & { docid: string }> = [];
+  const hits = [] as typeof response.hits;
+  for (const hit of response.hits) {
+    if (deps.documentFilter) {
+      let offset = 1;
+      const parts: string[] = [];
+      while (true) {
+        signal?.throwIfAborted();
+        const doc = await backend.readDocument(
+          offset === 1 ? { docid: hit.docid } : { docid: hit.docid, offset, limit: 10000 },
+          signal,
+        );
+        if (!doc.found)
+          throw new PiSearchToolExecutionError(
+            "search",
+            `Filter document '${hit.docid}' not found.`,
+          );
+        if (offset === 1 && doc.title) parts.push(doc.title);
+        parts.push(doc.text);
+        if (!doc.truncated) break;
+        if (!doc.nextOffset || doc.nextOffset <= offset)
+          throw new PiSearchToolExecutionError(
+            "search",
+            "Filter document pagination did not advance.",
+          );
+        offset = doc.nextOffset;
+      }
+      const score = await deps.documentFilter(filterQuestion!, parts.join("\n"), signal);
+      filterScores.push({ docid: hit.docid, ...score });
+      if (!score.keep) continue;
+    }
+    hits.push(hit);
+  }
+  const filterDetails = deps.documentFilter
+    ? {
+        question: filterQuestion,
+        candidateCount: response.hits.length,
+        keptCount: hits.length,
+        scores: filterScores,
+      }
+    : undefined;
+  const renderedText =
+    (filterDetails
+      ? `Yes/no filter kept ${hits.length} of ${response.hits.length} candidates (P(Yes) > P(No)).\n`
+      : "") +
+    formatDirectSearchText({
+      rawQuery,
+      limit,
+      hits,
+    });
   const rendered = truncateSearchOutput(
     deps.spillDir,
     `direct_search_${deps.nextSpillSequence()}.txt`,
     renderedText,
-    JSON.stringify({ rawQuery, limit, hits: response.hits }, null, 2),
+    JSON.stringify({ rawQuery, limit, hits, filter: filterDetails }, null, 2),
   );
-  const docids = response.hits.map((hit) => hit.docid);
+  const docids = hits.map((hit) => hit.docid);
   return {
     content: [{ type: "text" as const, text: rendered.text }],
     details: {
@@ -223,8 +278,9 @@ export async function executeDirectSearchTool(
       rawQuery,
       queryMode: SEARCH_QUERY_MODE,
       k: limit,
-      returnedRankStart: response.hits.length > 0 ? 1 : 0,
-      returnedRankEnd: response.hits.length,
+      returnedRankStart: hits.length > 0 ? 1 : 0,
+      returnedRankEnd: hits.length,
+      ...(filterDetails ? { filter: filterDetails } : {}),
       retrievedDocids: docids,
       previewedDocids: docids,
       timingMs: {

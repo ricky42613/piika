@@ -11,6 +11,7 @@ import {
 import {
   DirectReadDocumentParamsSchema,
   DirectSearchParamsSchema,
+  FilteredDirectSearchParamsSchema,
   PlainSearchParamsSchema,
   ReadDocumentParamsSchema,
   ReadSearchResultsParamsSchema,
@@ -30,6 +31,8 @@ import {
   executeSearchTool,
 } from "./tool_handlers";
 import { parsePiSearchToolInterface, type PiSearchToolInterface } from "./tool_interface";
+
+import { createYesNoFilter, FILTER_GUIDANCE, isSearchFilterEnabled } from "./yes_no_filter";
 
 export type { PiSearchToolInterface } from "./tool_interface";
 
@@ -61,6 +64,7 @@ export function registerPiSearchExtension(
     });
   const spillDir = new ManagedTempSpillDir(options.spillDirPrefix ?? "pi-search-extension-");
   const toolInterface = resolveToolInterface(options);
+  const filterEnabled = isSearchFilterEnabled(toolInterface);
   const submitNowDelayMs = getSubmitNowDelayMs();
   let spillSequence = 0;
   let submitNowTimer: ReturnType<typeof setTimeout> | null = null;
@@ -91,6 +95,7 @@ export function registerPiSearchExtension(
     searchStore,
     spillDir,
     nextSpillSequence,
+    documentFilter: filterEnabled ? createYesNoFilter() : undefined,
   };
   const pyseriniRestPaginatedRead =
     toolInterface === "pyserini-rest-2tool" &&
@@ -188,6 +193,7 @@ export function registerPiSearchExtension(
     promptGuidelines:
       toolInterface === "pyserini-rest-2tool"
         ? [
+            ...(filterEnabled ? [FILTER_GUIDANCE] : []),
             "Always provide reason first. Keep it specific and under 100 words.",
             "Use query as a short raw lexical query string, not a structured object and not raw Lucene syntax.",
             "The search result itself is the visible ranked list; there is no search_id or result-page browsing tool in this condition.",
@@ -202,7 +208,11 @@ export function registerPiSearchExtension(
             "After browsing a ranking that surfaces plausible candidates, inspect one with read_document(docid).",
           ],
     parameters:
-      toolInterface === "pyserini-rest-2tool" ? DirectSearchParamsSchema : PlainSearchParamsSchema,
+      toolInterface === "pyserini-rest-2tool"
+        ? filterEnabled
+          ? FilteredDirectSearchParamsSchema
+          : DirectSearchParamsSchema
+        : PlainSearchParamsSchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       return toolInterface === "pyserini-rest-2tool"
         ? executeDirectSearchTool(params, signal, ctx, toolDeps)

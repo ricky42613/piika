@@ -27,6 +27,15 @@ export const DirectSearchParamsSchema = Type.Object({
   ),
 });
 
+export const FilteredDirectSearchParamsSchema = Type.Object({
+  ...DirectSearchParamsSchema.properties,
+  filter_question: Type.String({
+    minLength: 1,
+    description:
+      "Self-contained yes/no question about the evidence needed for this search step. Each candidate document is retained only when P(Yes) > P(No).",
+  }),
+});
+
 export const ReadSearchResultsParamsSchema = Type.Object({
   reason: Type.String({
     description:

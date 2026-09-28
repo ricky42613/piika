@@ -1,5 +1,7 @@
 import { DEFAULT_PI_SEARCH_TOOL_INTERFACE, type PiSearchToolInterface } from "./tool_interface";
 
+import { FILTER_GUIDANCE, isSearchFilterEnabled } from "./yes_no_filter";
+
 const ANSWER_RESPONSE_FORMAT = `Answer:
 Explanation: {your explanation for your final answer. Cite supporting docids inline in square brackets [] at the end of sentences when possible, for example [123].}
 Exact Answer: {your succinct, final answer}
@@ -33,7 +35,9 @@ const THREE_TOOL_WORKFLOW = `Workflow:
 7. Every call to search, read_search_results, and read_document must include reason as the first argument. Keep it specific, under 100 words, and focused on the clue, gap, candidate, or ranking issue.`;
 
 function toolWorkflow(toolInterface: PiSearchToolInterface): string {
-  return toolInterface === "pyserini-rest-2tool" ? TWO_TOOL_WORKFLOW : THREE_TOOL_WORKFLOW;
+  return toolInterface === "pyserini-rest-2tool"
+    ? TWO_TOOL_WORKFLOW + (isSearchFilterEnabled(toolInterface) ? `\n\n${FILTER_GUIDANCE}` : "")
+    : THREE_TOOL_WORKFLOW;
 }
 
 const ANSWER_INSTRUCTIONS = `Answer output:
@@ -176,7 +180,7 @@ Workflow:
 8. Satisfy every requested output below; use the same research pass for all outputs.
 9. As soon as you have enough evidence and candidates, stop using tools and answer in plain assistant text.
 10. Do not mention or rely on any gold answer field; answer only from supplied or retrieved evidence.
-
+${isSearchFilterEnabled(toolInterface) ? `\n${FILTER_GUIDANCE}\n` : ""}
 ${outputInstructions.join("\n\n")}
 
 Your final response must contain exactly these sections in this order:
