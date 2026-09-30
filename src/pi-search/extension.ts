@@ -1,3 +1,5 @@
+import { createFilterQuestionGenerator } from "./filter_question";
+import { filterQuestionSource, filterThreshold } from "./filter_config";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { resolvePiSearchExtensionConfigFromEnv, type PiSearchExtensionConfig } from "./config";
 import {
@@ -32,7 +34,7 @@ import {
 } from "./tool_handlers";
 import { parsePiSearchToolInterface, type PiSearchToolInterface } from "./tool_interface";
 
-import { createYesNoFilter, FILTER_GUIDANCE, isSearchFilterEnabled } from "./yes_no_filter";
+import { createYesNoFilter, searchFilterGuidance, isSearchFilterEnabled } from "./yes_no_filter";
 
 export type { PiSearchToolInterface } from "./tool_interface";
 
@@ -65,6 +67,9 @@ export function registerPiSearchExtension(
   const spillDir = new ManagedTempSpillDir(options.spillDirPrefix ?? "pi-search-extension-");
   const toolInterface = resolveToolInterface(options);
   const filterEnabled = isSearchFilterEnabled(toolInterface);
+  const questionSource = filterEnabled ? filterQuestionSource() : "agent";
+  const threshold = filterEnabled ? filterThreshold() : 0.5;
+  const generatesFilterQuestion = filterEnabled && questionSource === "qorrect";
   const submitNowDelayMs = getSubmitNowDelayMs();
   let spillSequence = 0;
   let submitNowTimer: ReturnType<typeof setTimeout> | null = null;
@@ -96,6 +101,9 @@ export function registerPiSearchExtension(
     spillDir,
     nextSpillSequence,
     documentFilter: filterEnabled ? createYesNoFilter() : undefined,
+    questionSource,
+    filterThreshold: threshold,
+    generateFilterQuestion: generatesFilterQuestion ? createFilterQuestionGenerator() : undefined,
   };
   const pyseriniRestPaginatedRead =
     toolInterface === "pyserini-rest-2tool" &&
@@ -193,7 +201,7 @@ export function registerPiSearchExtension(
     promptGuidelines:
       toolInterface === "pyserini-rest-2tool"
         ? [
-            ...(filterEnabled ? [FILTER_GUIDANCE] : []),
+            ...(filterEnabled ? [searchFilterGuidance()] : []),
             "Always provide reason first. Keep it specific and under 100 words.",
             "Use query as a short raw lexical query string, not a structured object and not raw Lucene syntax.",
             "The search result itself is the visible ranked list; there is no search_id or result-page browsing tool in this condition.",
@@ -209,7 +217,7 @@ export function registerPiSearchExtension(
           ],
     parameters:
       toolInterface === "pyserini-rest-2tool"
-        ? filterEnabled
+        ? filterEnabled && questionSource === "agent"
           ? FilteredDirectSearchParamsSchema
           : DirectSearchParamsSchema
         : PlainSearchParamsSchema,

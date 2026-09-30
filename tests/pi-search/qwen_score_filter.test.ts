@@ -59,7 +59,7 @@ void test("Qwen defaults to score; Reranq stays generative; invalid protocol com
   assert.throws(() => createYesNoFilter({ PI_SEARCH_FILTER_API: "score" }), /Reranq requires/);
 });
 
-void test("score sends the original filter question, affirmative instruction, document-only budget and explicit activation", async () => {
+void test("score sends the search query, relevance instruction, document-only budget and explicit activation", async () => {
   const { calls, request } = mockScore();
   const filter = createYesNoFilter(env, request);
   const result = await filter("Does the museum open on Sundays?", "document");
@@ -79,7 +79,7 @@ void test("score sends the original filter question, affirmative instruction, do
   assert.equal(result.yesProbability, 0.9);
   assert.equal(result.backend, "qwen3-reranker");
   assert.equal(result.scoringApi, "score");
-  assert.equal(result.promptVersion, "qwen3-affirmative-evidence-v1");
+  assert.equal(result.promptVersion, "qwen3-query-relevance-v1");
   assert.equal(result.probabilitySemantics, "normalized_yes_no_tokens");
   assert.equal(result.promptTokens, 518);
   assert.equal(result.promptTokensSource, "server_usage");

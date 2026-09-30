@@ -71,14 +71,14 @@ void test("backend selection defaults to unchanged Reranq; unknown backend and m
   );
 });
 
-void test("Qwen uses official chat boundaries, affirmative-evidence instruction, and only lowercase yes/no", async () => {
+void test("Qwen uses official chat boundaries, default relevance instruction, and only lowercase yes/no", async () => {
   const { calls, request } = mockQwen();
   const filter = createYesNoFilter(qwenEnv, request);
   const question = "Does this document say the museum opened in 1990?";
   const result = await filter(question, "document");
   assert.equal(result.backend, "qwen3-reranker");
   assert.equal(result.model, "Qwen/Qwen3-Reranker-4B");
-  assert.equal(result.promptVersion, "qwen3-affirmative-evidence-v1");
+  assert.equal(result.promptVersion, "qwen3-query-relevance-v1");
   assert.equal(result.probabilitySemantics, "normalized_yes_no_tokens");
   assert.equal(result.yesProbability, 0.8);
   assert.equal(result.keep, true);

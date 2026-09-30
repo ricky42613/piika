@@ -52,7 +52,7 @@ fetch_file() {
 }
 
 run_hf() {
-  if command -v hf >/dev/null 2>&1; then
+  if command -v hf >/dev/null 2>&1 && hf --help >/dev/null 2>&1; then
     hf "$@"
     return
   fi

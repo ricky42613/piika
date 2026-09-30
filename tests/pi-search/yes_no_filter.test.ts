@@ -253,6 +253,36 @@ void test("direct search filters full documents, preserves ranking, records scor
       executeDirectSearchTool({ ...params, filter_question: " " }, undefined, { cwd: "." }, deps),
       /filter_question/,
     );
+    let generated = 0;
+    let scored = 0;
+    const generatedResult = await executeDirectSearchTool(
+      { reason: "test", query: "shared", hits: 3, filter_question: "ignored" },
+      undefined, { cwd: "." },
+      { ...deps,
+        generateFilterQuestion: async (query) => { generated++; assert.equal(query, "shared"); return "Generated question?"; },
+        documentFilter: async (question) => { scored++; assert.equal(question, "Generated question?"); return filterScoreFromYesProbability(0.9); },
+      },
+    );
+    assert.equal(generated, 1);
+    assert.equal(scored, 3);
+    assert.equal(generatedResult.details.filter?.inputSource, "qorrect");
+    assert.equal(generatedResult.details.filter?.question, "Generated question?");
+    await assert.rejects(executeDirectSearchTool(
+      params, undefined, { cwd: "." },
+      { ...deps, generateFilterQuestion: async () => { throw new Error("generation failed"); } },
+    ), /generation failed/);
+    const relevance = await executeDirectSearchTool(
+      { reason: "test", query: "shared", hits: 3 },
+      undefined,
+      { cwd: "." },
+      { ...deps, questionSource: "general", documentFilter: async (query) => {
+        assert.equal(query, "shared");
+        return filterScoreFromYesProbability(0.9);
+      } },
+    );
+    assert.equal(relevance.details.filter?.inputSource, "general");
+    assert.equal(relevance.details.filter?.question, "shared");
+    assert.deepEqual(relevance.details.retrievedDocids, ["a", "b", "c"]);
     const empty = await executeDirectSearchTool(
       params,
       undefined,

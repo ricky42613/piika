@@ -1,6 +1,6 @@
+import { filterQuestionSource, filterThreshold, filterPredictor, type FilterQuestionSource, type FilterPredictor } from "./filter_config";
 import type { PiSearchToolInterface } from "./tool_interface";
 import {
-  QWEN3_FILTER_INSTRUCTION,
   resolveFilterBackend,
   type SearchFilterBackend,
 } from "./filter_backends";
@@ -8,6 +8,16 @@ export { CLASSIFICATION_SUFFIX } from "./filter_backends";
 
 export const FILTER_GUIDANCE =
   "For every search, supply filter_question: a self-contained yes/no question about evidence needed for your current reasoning step. Include relevant entities and context because the filter sees only this question and one document, not your conversation. Ask about a concrete clue or missing link, not generic relevance to the original question; do not require one document to solve every hop. Only documents with P(Yes) > P(No) survive, in their original order. The classifier reads only the first 512 document tokens, so a rejection can miss evidence later in a document. hits is the candidate count before filtering; zero survivors does not prove the answer does not exist. Verify surviving evidence with read_document.";
+
+export function searchFilterGuidance(env = process.env): string {
+  const source = filterQuestionSource(env);
+  const threshold = filterThreshold(env);
+  if (source === "agent") return FILTER_GUIDANCE.replace("P(Yes) > P(No)", `P(Yes) > ${threshold}`);
+  return (source === "general"
+    ? "Search candidates are automatically filtered by relevance to the search query."
+    : "A filter question is generated automatically from the original question and current search query; candidates are scored against it.") +
+    ` Only candidates with score > ${threshold} survive, in their original order. The scorer reads the first 512 document tokens. hits is the candidate count before filtering; zero survivors does not prove no evidence exists. Verify promising documents with read_document.`;
+}
 
 export function isSearchFilterEnabled(
   toolInterface: PiSearchToolInterface,
@@ -29,6 +39,9 @@ export type FilterScore = {
   keep: boolean;
   probabilitySemantics: "normalized_yes_no_variants" | "normalized_yes_no_tokens";
   backend?: SearchFilterBackend;
+  predictor?: FilterPredictor;
+  questionSource?: FilterQuestionSource;
+  threshold?: number;
   promptVersion?: string;
   scoringApi?: "score" | "generative_scoring";
   promptTokensSource?: "server_usage" | "constructed_token_ids";
@@ -44,7 +57,8 @@ export type DocumentFilter = (
   signal?: AbortSignal,
 ) => Promise<FilterScore>;
 
-export function filterScoreFromYesProbability(yes: number): FilterScore {
+export function filterScoreFromYesProbability(yes: number, threshold = 0.5): FilterScore {
+  if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) throw new Error("Invalid filter threshold.");
   if (!Number.isFinite(yes) || yes < 0 || yes > 1) {
     throw new Error("Search filter requires a Yes probability in [0, 1].");
   }
@@ -54,7 +68,8 @@ export function filterScoreFromYesProbability(yes: number): FilterScore {
     noLogprob: no > 0 ? Math.log(no) : null,
     yesProbability: yes,
     noProbability: no,
-    keep: yes > no,
+    keep: yes > threshold,
+    threshold,
     probabilitySemantics: "normalized_yes_no_variants",
   };
 }
@@ -69,6 +84,9 @@ export function createYesNoFilter(
 ): DocumentFilter {
   const profile = resolveFilterBackend(env);
   const { baseUrl, model, apiKey } = profile;
+  const threshold = filterThreshold(env);
+  const predictor = filterPredictor(env);
+  const questionSource = filterQuestionSource(env);
   let labels: { yes: number[]; all: number[]; suffix: number[] } | undefined;
 
   async function post(route: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
@@ -151,7 +169,7 @@ export function createYesNoFilter(
           model,
           queries: question,
           documents: [document],
-          instruction: QWEN3_FILTER_INSTRUCTION,
+          instruction: profile.instruction,
           max_tokens_per_query: 0,
           max_tokens_per_doc: budget,
           truncate_prompt_tokens: null,
@@ -180,7 +198,8 @@ export function createYesNoFilter(
       if (promptTokens !== undefined && (!Number.isSafeInteger(promptTokens) || promptTokens < 0))
         throw new Error("Search filter received invalid score prompt token usage.");
       return {
-        ...filterScoreFromYesProbability(row.score),
+        ...filterScoreFromYesProbability(row.score, threshold),
+        predictor, questionSource,
         backend: profile.backend,
         promptVersion: profile.promptVersion,
         scoringApi: profile.scoringApi,
@@ -229,7 +248,8 @@ export function createYesNoFilter(
     if (yesProbability > 1 + 1e-6)
       throw new Error("Search filter Yes variant probabilities sum to more than one.");
     return {
-      ...filterScoreFromYesProbability(Math.min(1, yesProbability)),
+      ...filterScoreFromYesProbability(Math.min(1, yesProbability), threshold),
+      predictor, questionSource,
       backend: profile.backend,
       promptVersion: profile.promptVersion,
       scoringApi: profile.scoringApi,

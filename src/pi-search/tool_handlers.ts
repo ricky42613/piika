@@ -27,6 +27,8 @@ import type {
   ToolTimingBreakdown,
 } from "./tool_types";
 
+import type { FilterQuestionSource } from "./filter_config";
+import type { FilterQuestionGenerator } from "./filter_question";
 import type { DocumentFilter, FilterScore } from "./yes_no_filter";
 
 const SEARCH_QUERY_MODE = "plain";
@@ -45,6 +47,9 @@ type ToolHandlerDeps = {
   spillDir: ManagedTempSpillDir;
   nextSpillSequence: SpillSequence;
   documentFilter?: DocumentFilter;
+  questionSource?: FilterQuestionSource;
+  filterThreshold?: number;
+  generateFilterQuestion?: FilterQuestionGenerator;
 };
 
 function formatReadDocumentText(parsed: {
@@ -198,7 +203,15 @@ export async function executeDirectSearchTool(
       "query must be a non-empty string.",
     );
   }
-  const filterQuestion = params.filter_question?.trim();
+  const source = deps.questionSource ?? (deps.generateFilterQuestion ? "qorrect" : "agent");
+  if (deps.documentFilter && source === "qorrect" && !deps.generateFilterQuestion) {
+    throw new Error("Qorrect question generator is not configured.");
+  }
+  const filterQuestion = source === "general"
+    ? rawQuery
+    : deps.documentFilter && source === "qorrect" && deps.generateFilterQuestion
+      ? await deps.generateFilterQuestion(rawQuery, signal)
+      : params.filter_question?.trim();
   if (deps.documentFilter && !filterQuestion) {
     throw new PiSearchInvalidToolArgumentsError(
       "search arguments",
@@ -250,6 +263,8 @@ export async function executeDirectSearchTool(
   const filterDetails = deps.documentFilter
     ? {
         question: filterQuestion,
+        inputSource: source,
+        threshold: deps.filterThreshold ?? 0.5,
         candidateCount: response.hits.length,
         keptCount: hits.length,
         scores: filterScores,
@@ -257,7 +272,7 @@ export async function executeDirectSearchTool(
     : undefined;
   const renderedText =
     (filterDetails
-      ? `Yes/no filter kept ${hits.length} of ${response.hits.length} candidates (P(Yes) > P(No)).\n`
+      ? `Filter kept ${hits.length} of ${response.hits.length} candidates (score > ${deps.filterThreshold ?? 0.5}).\n`
       : "") +
     formatDirectSearchText({
       rawQuery,

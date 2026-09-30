@@ -18,6 +18,7 @@ fi
 mkdir -p "$(dirname "$OUTPUT_JSONL")" "$(dirname "$OUTPUT_TSV")" "$(dirname "$OUTPUT_GOLD_QRELS")" "$CACHE_DIR"
 
 uv run --no-project \
+  --with 'numpy<2' \
   --with datasets \
   --with huggingface_hub \
   python - <<'PY' "$DATASET_REPO" "$CACHE_DIR" "$OUTPUT_JSONL" "$OUTPUT_TSV" "$OUTPUT_GOLD_QRELS" "$CANARY"

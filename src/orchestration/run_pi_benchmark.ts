@@ -1527,6 +1527,7 @@ async function main() {
             ...searchBackendConnection.env,
             PI_SEARCH_EXTENSION_CONFIG: JSON.stringify(searchBackendConnection.config),
             PI_SEARCH_TOOL_INTERFACE: args.toolInterface,
+            PI_SEARCH_ORIGINAL_QUESTION: query,
           },
           rawEventsPath,
           stderrPath,
