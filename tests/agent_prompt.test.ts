@@ -52,6 +52,16 @@ void test("prompt defaults to the direct two-tool workflow", () => {
   assert.doesNotMatch(prompt, /offset=1/);
 });
 
+void test("clue-docs two-tool workflow documents clue_docs", () => {
+  const prompt = formatPiSearchPrompt("alpha", "plain_minimal", {
+    toolInterface: "pyserini-rest-2tool-clue-docs",
+  });
+
+  assert.match(prompt, /ranked hits returned directly by search/);
+  assert.match(prompt, /Every search call must include clue_docs/);
+  assert.doesNotMatch(prompt, /read_search_results/);
+});
+
 void test("three-tool workflow remains an explicit opt-in", () => {
   const prompt = formatPiSearchPrompt("alpha", "plain_minimal", {
     toolInterface: "pi-serini-3tool",

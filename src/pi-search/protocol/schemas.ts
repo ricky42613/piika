@@ -27,12 +27,28 @@ export const DirectSearchParamsSchema = Type.Object({
   ),
 });
 
+export const ClueDocsDirectSearchParamsSchema = Type.Object({
+  ...DirectSearchParamsSchema.properties,
+  clue_docs: Type.String({
+    description:
+      "Comma-separated docids of documents already read that motivated or informed this search query. Use an empty string when the query is not based on any specific document.",
+  }),
+});
+
 export const FilteredDirectSearchParamsSchema = Type.Object({
   ...DirectSearchParamsSchema.properties,
   filter_question: Type.String({
     minLength: 1,
     description:
       "Self-contained yes/no question about the evidence needed for this search step. Each candidate document is retained only when P(Yes) > P(No).",
+  }),
+});
+
+export const ClueDocsFilteredDirectSearchParamsSchema = Type.Object({
+  ...FilteredDirectSearchParamsSchema.properties,
+  clue_docs: Type.String({
+    description:
+      "Comma-separated docids of documents already read that motivated or informed this search query. Use an empty string when the query is not based on any specific document.",
   }),
 });
 

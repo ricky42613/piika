@@ -1,4 +1,9 @@
-import { DEFAULT_PI_SEARCH_TOOL_INTERFACE, type PiSearchToolInterface } from "./tool_interface";
+import {
+  DEFAULT_PI_SEARCH_TOOL_INTERFACE,
+  isDirectTwoToolInterface,
+  usesSearchClueDocs,
+  type PiSearchToolInterface,
+} from "./tool_interface";
 
 import { searchFilterGuidance, isSearchFilterEnabled } from "./yes_no_filter";
 
@@ -35,9 +40,15 @@ const THREE_TOOL_WORKFLOW = `Workflow:
 7. Every call to search, read_search_results, and read_document must include reason as the first argument. Keep it specific, under 100 words, and focused on the clue, gap, candidate, or ranking issue.`;
 
 function toolWorkflow(toolInterface: PiSearchToolInterface): string {
-  return toolInterface === "pyserini-rest-2tool"
-    ? TWO_TOOL_WORKFLOW + (isSearchFilterEnabled(toolInterface) ? `\n\n${searchFilterGuidance()}` : "")
-    : THREE_TOOL_WORKFLOW;
+  if (!isDirectTwoToolInterface(toolInterface)) return THREE_TOOL_WORKFLOW;
+  const clueDocsGuidance = usesSearchClueDocs(toolInterface)
+    ? `\n8. Every search call must include clue_docs, a comma-separated string of document ids whose contents motivated this query. Use an empty string when the query is based only on the original question or general reasoning, and list docids read with read_document when their contents caused the rewrite.`
+    : "";
+  return (
+    TWO_TOOL_WORKFLOW +
+    clueDocsGuidance +
+    (isSearchFilterEnabled(toolInterface) ? `\n\n${searchFilterGuidance()}` : "")
+  );
 }
 
 const ANSWER_INSTRUCTIONS = `Answer output:
@@ -158,14 +169,13 @@ export function formatPiSearchPromptWithSuppliedContext(
     wantsRankedList ? RANKED_LIST_RESPONSE_FORMAT : undefined,
   ].filter((section): section is string => Boolean(section));
   const toolInterface = options?.toolInterface ?? DEFAULT_PI_SEARCH_TOOL_INTERFACE;
-  const toolNames =
-    toolInterface === "pyserini-rest-2tool"
-      ? "search and read_document"
-      : "search, read_search_results, and read_document";
-  const browseConstraint =
-    toolInterface === "pyserini-rest-2tool"
-      ? ""
-      : " Do not use read_search_results unless the single search result page is unusable without it.";
+  const directTwoTool = isDirectTwoToolInterface(toolInterface);
+  const toolNames = directTwoTool
+    ? "search and read_document"
+    : "search, read_search_results, and read_document";
+  const browseConstraint = directTwoTool
+    ? ""
+    : " Do not use read_search_results unless the single search result page is unusable without it.";
 
   return `You are a deep research agent answering a question using supplied documents and optional search tools.
 
@@ -176,7 +186,7 @@ Workflow:
 4. Search budget: at most one search call total, and at most one follow-up read_document call if that search returns a specific document you need.${browseConstraint}
 5. Use that limited search budget only if the supplied documents do not establish the requested output, or if one narrowly targeted lookup is likely to resolve a concrete missing link.
 6. Do not perform broad searches just to verify every clue after the supplied documents already establish the result.
-7. Every call to ${toolNames} must include reason as the first argument. Keep it specific, under 100 words, and focused on the clue, gap, candidate, or ranking issue.
+7. Every call to ${toolNames} must include reason as the first argument. Keep it specific, under 100 words, and focused on the clue, gap, candidate, or ranking issue.${usesSearchClueDocs(toolInterface) ? " Every search call must also include clue_docs as a comma-separated string; put supplied/retrieved docids that motivated this query, or an empty string if none." : ""}
 8. Satisfy every requested output below; use the same research pass for all outputs.
 9. As soon as you have enough evidence and candidates, stop using tools and answer in plain assistant text.
 10. Do not mention or rely on any gold answer field; answer only from supplied or retrieved evidence.

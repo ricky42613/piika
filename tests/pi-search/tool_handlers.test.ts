@@ -216,6 +216,74 @@ void test("direct search returns visible docids without creating a search_id bro
   cleanup();
 });
 
+void test("qorrect-generated filter question receives accumulated clue document text", async () => {
+  const seenDocBatches: string[][] = [];
+  const { deps, cleanup } = createRuntimeDeps();
+  Object.assign(deps, {
+    documentFilter: async () => ({
+      keep: true,
+      pYes: 0.9,
+      pNo: 0.1,
+      threshold: 0.5,
+      predictor: "qwen",
+      questionSource: "qorrect",
+      model: "mock",
+      promptVersion: "test",
+      usage: {},
+    }),
+    questionSource: "qorrect",
+    generateFilterQuestion: async (_query: string, reason: string, _signal?: AbortSignal, seenDocs?: readonly string[]) => {
+      assert.equal(reason, "follow document clue");
+      seenDocBatches.push([...(seenDocs ?? [])]);
+      return "Does this document mention the missing analytical engine evidence?";
+    },
+    qorrectSeenClueDocids: new Set<string>(),
+    includeQorrectSeenDocs: true,
+  });
+
+  await executeDirectSearchTool(
+    { reason: "follow document clue", query: "analytical engine", clue_docs: "doc-1", hits: 1 },
+    undefined,
+    { cwd: "." },
+    deps,
+  );
+
+  assert.equal(seenDocBatches.length, 1);
+  assert.equal(seenDocBatches[0].length, 1);
+  assert.match(seenDocBatches[0][0], /Ada Lovelace/);
+  assert.match(seenDocBatches[0][0], /analytical engine/);
+
+  cleanup();
+});
+
+void test("qorrect omits clue document reads by default while passing search reason", async () => {
+  const { deps, cleanup } = createRuntimeDeps();
+  const seenClueDocids = new Set<string>();
+  Object.assign(deps, {
+    documentFilter: async () => ({ keep: true }),
+    questionSource: "qorrect",
+    generateFilterQuestion: async (query: string, reason: string, _signal?: AbortSignal, seenDocs?: readonly string[]) => {
+      assert.equal(query, "analytical engine");
+      assert.equal(reason, "follow clue");
+      assert.deepEqual(seenDocs, []);
+      return "Does this document contain analytical engine evidence?";
+    },
+    qorrectSeenClueDocids: seenClueDocids,
+  });
+  try {
+    const result = await executeDirectSearchTool(
+      { reason: "follow clue", query: "analytical engine", clue_docs: "nonexistent-id", hits: 1 },
+      undefined,
+      { cwd: "." },
+      deps,
+    );
+    assert.equal(result.details.filter?.question, "Does this document contain analytical engine evidence?");
+    assert.equal(seenClueDocids.size, 0);
+  } finally {
+    cleanup();
+  }
+});
+
 void test("direct read_document returns a full document without continuation guidance", async () => {
   const { deps, cleanup } = createRuntimeDeps();
 

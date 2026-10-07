@@ -1,22 +1,33 @@
-import { filterQuestionSource, filterThreshold, filterPredictor, type FilterQuestionSource, type FilterPredictor } from "./filter_config";
-import type { PiSearchToolInterface } from "./tool_interface";
 import {
-  resolveFilterBackend,
-  type SearchFilterBackend,
-} from "./filter_backends";
-export { CLASSIFICATION_SUFFIX } from "./filter_backends";
+  filterQuestionSource,
+  filterThreshold,
+  filterPredictor,
+  type FilterQuestionSource,
+  type FilterPredictor,
+} from "./filter_config";
+import { isDirectTwoToolInterface, type PiSearchToolInterface } from "./tool_interface";
+import { resolveFilterBackend, type SearchFilterBackend } from "./filter_backends";
+
+export const JEV_GENERAL_PROMPT =
+  "Does the document contain information that directly helps answer the query?";
 
 export const FILTER_GUIDANCE =
   "For every search, supply filter_question: a self-contained yes/no question about evidence needed for your current reasoning step. Include relevant entities and context because the filter sees only this question and one document, not your conversation. Ask about a concrete clue or missing link, not generic relevance to the original question; do not require one document to solve every hop. Only documents with P(Yes) > P(No) survive, in their original order. The classifier reads only the first 512 document tokens, so a rejection can miss evidence later in a document. hits is the candidate count before filtering; zero survivors does not prove the answer does not exist. Verify surviving evidence with read_document.";
 
 export function searchFilterGuidance(env = process.env): string {
+  const predictor = filterPredictor(env);
   const source = filterQuestionSource(env);
   const threshold = filterThreshold(env);
+  if (predictor === "jev") {
+    return `Search candidates are assessed with the fixed question: "${JEV_GENERAL_PROMPT}" The tool filters BM25 top REREANK_DEPTH candidates and keeps only documents with true probability > false probability, preserving original BM25 order and returning at most hits survivors. No relevance question or criteria arguments are needed.`;
+  }
   if (source === "agent") return FILTER_GUIDANCE.replace("P(Yes) > P(No)", `P(Yes) > ${threshold}`);
-  return (source === "general"
-    ? "Search candidates are automatically filtered by relevance to the search query."
-    : "A filter question is generated automatically from the original question and current search query; candidates are scored against it.") +
-    ` Only candidates with score > ${threshold} survive, in their original order. The scorer reads the first 512 document tokens. hits is the candidate count before filtering; zero survivors does not prove no evidence exists. Verify promising documents with read_document.`;
+  return (
+    (source === "general"
+      ? "Search candidates are automatically filtered by relevance to the search query."
+      : "A filter question is generated automatically from the original question and current search query; candidates are scored against it.") +
+    ` Only candidates with score > ${threshold} survive, in their original order. The scorer reads the first 512 document tokens. hits is the candidate count before filtering; zero survivors does not prove no evidence exists. Verify promising documents with read_document.`
+  );
 }
 
 export function isSearchFilterEnabled(
@@ -24,7 +35,7 @@ export function isSearchFilterEnabled(
   env = process.env,
 ): boolean {
   return (
-    toolInterface === "pyserini-rest-2tool" &&
+    isDirectTwoToolInterface(toolInterface) &&
     /^(1|true)$/i.test(env.PI_SEARCH_FILTER_ENABLED?.trim() ?? "")
   );
 }
@@ -37,13 +48,13 @@ export type FilterScore = {
   yesProbability: number;
   noProbability: number;
   keep: boolean;
-  probabilitySemantics: "normalized_yes_no_variants" | "normalized_yes_no_tokens";
+  probabilitySemantics: "normalized_yes_no_tokens";
   backend?: SearchFilterBackend;
   predictor?: FilterPredictor;
   questionSource?: FilterQuestionSource;
   threshold?: number;
   promptVersion?: string;
-  scoringApi?: "score" | "generative_scoring";
+  scoringApi?: "score" | "generative_scoring" | "systemone" | "vllm_prompt_logprobs";
   promptTokensSource?: "server_usage" | "constructed_token_ids";
   model?: string;
   promptTokens?: number;
@@ -57,8 +68,14 @@ export type DocumentFilter = (
   signal?: AbortSignal,
 ) => Promise<FilterScore>;
 
+function logsumexp(values: readonly number[]): number {
+  const max = Math.max(...values);
+  return max + Math.log(values.reduce((sum, value) => sum + Math.exp(value - max), 0));
+}
+
 export function filterScoreFromYesProbability(yes: number, threshold = 0.5): FilterScore {
-  if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) throw new Error("Invalid filter threshold.");
+  if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1)
+    throw new Error("Invalid filter threshold.");
   if (!Number.isFinite(yes) || yes < 0 || yes > 1) {
     throw new Error("Search filter requires a Yes probability in [0, 1].");
   }
@@ -70,7 +87,7 @@ export function filterScoreFromYesProbability(yes: number, threshold = 0.5): Fil
     noProbability: no,
     keep: yes > threshold,
     threshold,
-    probabilitySemantics: "normalized_yes_no_variants",
+    probabilitySemantics: "normalized_yes_no_tokens",
   };
 }
 
@@ -86,7 +103,7 @@ export function createYesNoFilter(
   const { baseUrl, model, apiKey } = profile;
   const threshold = filterThreshold(env);
   const predictor = filterPredictor(env);
-  const questionSource = filterQuestionSource(env);
+  const questionSource = predictor === "jev" ? "general" : filterQuestionSource(env);
   let labels: { yes: number[]; all: number[]; suffix: number[] } | undefined;
 
   async function post(route: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
@@ -129,8 +146,7 @@ export function createYesNoFilter(
     for (const text of texts) {
       const tokens = await tokenize(text, signal);
       if (tokens.length === 1) ids.add(tokens[0]!);
-      else if (profile.requireSingleToken)
-        throw new Error(`Search filter ${profile.backend} requires single-token ${text}.`);
+      else throw new Error(`Search filter ${profile.backend} requires single-token ${text}.`);
     }
     if (!ids.size)
       throw new Error(`Search filter requires at least one single-token ${texts[0]} variant.`);
@@ -140,15 +156,87 @@ export function createYesNoFilter(
   return async (question, document, signal) => {
     signal?.throwIfAborted();
     if (!question.trim()) throw new Error("Search filter requires a non-empty filter question.");
+    if (profile.scoringApi === "systemone") {
+      const payload = (await post(
+        "/v1/systemone",
+        {
+          state: { query: question, candidate_passage: document },
+          model,
+          questions: {
+            relevant: {
+              type: "noul",
+              instructions: JEV_GENERAL_PROMPT,
+            },
+          },
+        },
+        signal,
+      )) as {
+        model?: string;
+        answers?: { relevant?: { noul?: number; probabilities?: Record<string, number> } };
+        usage?: { input_tokens?: number; output_tokens?: number };
+      } | null;
+      const answer = payload?.answers?.relevant;
+      let trueProbability = typeof answer?.noul === "number" ? answer.noul : undefined;
+      const probs = answer?.probabilities;
+      if (trueProbability === undefined && probs) {
+        trueProbability = probs.true ?? probs.True ?? probs.relevant ?? probs["1"];
+      }
+      const falseProbability = probs
+        ? (probs.false ?? probs.False ?? probs.irrelevant ?? probs["0"])
+        : trueProbability === undefined
+          ? undefined
+          : 1 - trueProbability;
+      if (
+        typeof trueProbability !== "number" ||
+        !Number.isFinite(trueProbability) ||
+        trueProbability < 0 ||
+        trueProbability > 1 ||
+        typeof falseProbability !== "number" ||
+        !Number.isFinite(falseProbability) ||
+        falseProbability < 0 ||
+        falseProbability > 1
+      )
+        throw new Error("Search filter received invalid JEV noul probabilities.");
+      const promptTokens = payload?.usage?.input_tokens;
+      if (promptTokens !== undefined && (!Number.isSafeInteger(promptTokens) || promptTokens < 0))
+        throw new Error("Search filter received invalid JEV input token usage.");
+      return {
+        yesLogprob: trueProbability > 0 ? Math.log(trueProbability) : null,
+        noLogprob: falseProbability > 0 ? Math.log(falseProbability) : null,
+        yesProbability: trueProbability,
+        noProbability: falseProbability,
+        keep: trueProbability > falseProbability,
+        threshold: falseProbability,
+        predictor,
+        questionSource,
+        backend: profile.backend,
+        promptVersion: profile.promptVersion,
+        scoringApi: profile.scoringApi,
+        probabilitySemantics: profile.probabilitySemantics,
+        model: payload?.model ?? model,
+        ...(promptTokens !== undefined
+          ? { promptTokens, promptTokensSource: "server_usage" as const }
+          : {}),
+        documentTokens: undefined,
+        documentTruncated: undefined,
+        scoringRequests: 1,
+      };
+    }
     if (!labels) {
-      const yes = profile.scoringApi === "score" ? [] : await variants(profile.yesLabels, signal);
-      const no = profile.scoringApi === "score" ? [] : await variants(profile.noLabels, signal);
+      const yes =
+        profile.scoringApi === "score" || profile.scoringApi === "vllm_prompt_logprobs"
+          ? []
+          : await variants(profile.yesLabels, signal);
+      const no =
+        profile.scoringApi === "score" || profile.scoringApi === "vllm_prompt_logprobs"
+          ? []
+          : await variants(profile.noLabels, signal);
       if (yes.some((id) => no.includes(id)))
         throw new Error("Search filter Yes/No token variants overlap.");
       labels = { yes, all: [...yes, ...no], suffix: await tokenize(profile.suffix, signal) };
     }
     // Preserve complete instructions/question/suffix, truncate only the document.
-    // Reranq boundaries remain identical to its training helper; Qwen uses its chat template.
+    // Qwen uses its chat template; only document content may be truncated.
     const prefix = await tokenize(profile.prefix(question), signal);
     const budget = Math.min(
       MAX_DOCUMENT_TOKENS,
@@ -199,7 +287,8 @@ export function createYesNoFilter(
         throw new Error("Search filter received invalid score prompt token usage.");
       return {
         ...filterScoreFromYesProbability(row.score, threshold),
-        predictor, questionSource,
+        predictor,
+        questionSource,
         backend: profile.backend,
         promptVersion: profile.promptVersion,
         scoringApi: profile.scoringApi,
@@ -213,43 +302,88 @@ export function createYesNoFilter(
         scoringRequests: 1,
       };
     }
-    const prompt = [...prefix, ...retainedDocIds, ...labels.suffix];
-    let yesProbability = 0;
-    for (const yesId of labels.yes) {
-      // This endpoint returns only the FIRST label's probability. Keep the same
-      // normalization set across requests and sum the disjoint Yes variants.
-      const payload = (await post(
-        "/generative_scoring",
-        {
-          model,
-          query: [],
-          items: [prompt],
-          label_token_ids: [yesId, ...labels.all.filter((id) => id !== yesId)],
-          apply_softmax: true,
-          add_special_tokens: false,
-        },
-        signal,
-      )) as { data?: Array<{ index?: number; score?: number }> } | null;
-      const row = payload?.data?.[0];
-      if (
-        payload?.data?.length !== 1 ||
-        row?.index !== 0 ||
-        typeof row.score !== "number" ||
-        !Number.isFinite(row.score) ||
-        row.score < 0 ||
-        row.score > 1
-      ) {
-        throw new Error(
-          "Search filter received an invalid or incomplete generative scoring response.",
-        );
+    if (profile.scoringApi === "vllm_prompt_logprobs") {
+      const promptText = profile.prefix(question) + document.slice(0, 16000) + profile.suffix;
+      async function forcedLabelLogprob(label: string): Promise<number> {
+        const payload = (await post(
+          "/v1/completions",
+          {
+            model,
+            prompt: [promptText + label],
+            max_tokens: 1,
+            temperature: 0,
+            prompt_logprobs: 1,
+          },
+          signal,
+        )) as {
+          choices?: Array<{
+            index?: number;
+            prompt_logprobs?: Array<Record<string, { decoded_token?: string; logprob?: number }> | null>;
+          }>;
+        } | null;
+        const top = payload?.choices?.[0]?.prompt_logprobs?.at(-1);
+        if (!top) throw new Error("Search filter received invalid vLLM prompt_logprobs response.");
+        for (const entry of Object.values(top)) {
+          if (entry?.decoded_token === label && typeof entry.logprob === "number") {
+            return entry.logprob;
+          }
+        }
+        throw new Error(`Search filter vLLM response did not include forced token ${label}.`);
       }
-      yesProbability += row.score;
+      const yesLogprob = await forcedLabelLogprob(profile.yesLabels[0]!);
+      const noLogprob = await forcedLabelLogprob(profile.noLabels[0]!);
+      const z = logsumexp([yesLogprob, noLogprob]);
+      const yesProbability = Math.exp(yesLogprob - z);
+      const noProbability = Math.exp(noLogprob - z);
+      return {
+        yesLogprob,
+        noLogprob,
+        yesProbability,
+        noProbability,
+        keep: yesProbability > noProbability,
+        threshold: noProbability,
+        predictor,
+        questionSource,
+        backend: profile.backend,
+        promptVersion: profile.promptVersion,
+        scoringApi: profile.scoringApi,
+        probabilitySemantics: profile.probabilitySemantics,
+        model,
+        promptTokens: prefix.length + retainedDocIds.length + labels.suffix.length,
+        promptTokensSource: "constructed_token_ids",
+        documentTokens: retainedDocIds.length,
+        documentTruncated: retainedDocIds.length < docIds.length,
+        scoringRequests: 2,
+      };
     }
-    if (yesProbability > 1 + 1e-6)
-      throw new Error("Search filter Yes variant probabilities sum to more than one.");
+    const prompt = [...prefix, ...retainedDocIds, ...labels.suffix];
+    const payload = (await post(
+      "/generative_scoring",
+      {
+        model,
+        query: [],
+        items: [prompt],
+        label_token_ids: labels.all,
+        apply_softmax: true,
+        add_special_tokens: false,
+      },
+      signal,
+    )) as { data?: Array<{ index?: number; score?: number }> } | null;
+    const row = payload?.data?.[0];
+    if (
+      payload?.data?.length !== 1 ||
+      row?.index !== 0 ||
+      typeof row.score !== "number" ||
+      !Number.isFinite(row.score) ||
+      row.score < 0 ||
+      row.score > 1
+    ) {
+      throw new Error("Search filter received an invalid or incomplete generative scoring response.");
+    }
     return {
-      ...filterScoreFromYesProbability(Math.min(1, yesProbability), threshold),
-      predictor, questionSource,
+      ...filterScoreFromYesProbability(row.score, threshold),
+      predictor,
+      questionSource,
       backend: profile.backend,
       promptVersion: profile.promptVersion,
       scoringApi: profile.scoringApi,
@@ -259,7 +393,7 @@ export function createYesNoFilter(
       promptTokens: prompt.length,
       documentTokens: retainedDocIds.length,
       documentTruncated: retainedDocIds.length < docIds.length,
-      scoringRequests: labels.yes.length,
+      scoringRequests: 1,
     };
   };
 }

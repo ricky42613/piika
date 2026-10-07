@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  CLASSIFICATION_SUFFIX,
   QWEN3_FILTER_INSTRUCTION,
   QWEN3_FILTER_SUFFIX,
   resolveFilterBackend,
@@ -9,7 +8,8 @@ import {
 import { createYesNoFilter } from "../../src/pi-search/yes_no_filter";
 
 const qwenEnv = {
-  PI_SEARCH_FILTER_BACKEND: "qwen3-reranker",
+  PI_SEARCH_FILTER_PREDICTOR: "qwen",
+  PI_SEARCH_FILTER_QUESTION_SOURCE: "general",
   PI_SEARCH_FILTER_API: "generative_scoring",
   PI_SEARCH_FILTER_BASE_URL: "http://qwen:8151/v1/",
 };
@@ -53,22 +53,11 @@ function mockQwen(
   return { calls, request };
 }
 
-void test("backend selection defaults to unchanged Reranq; unknown backend and missing Qwen endpoint fail early", () => {
-  const defaultProfile = resolveFilterBackend({});
-  assert.deepEqual(defaultProfile.yesLabels, ["Yes", " Yes"]);
-  assert.equal(defaultProfile.baseUrl, "http://127.0.0.1:8150");
-  assert.equal(defaultProfile.model, "reranq-filter");
-  assert.equal(defaultProfile.suffix, CLASSIFICATION_SUFFIX);
-  assert.equal(defaultProfile.prefix("q"), "Filter question:\nq\n\nDocument:\n");
-  assert.equal(resolveFilterBackend({ PI_SEARCH_FILTER_BACKEND: "reranq" }).backend, "reranq");
-  assert.throws(
-    () => createYesNoFilter({ PI_SEARCH_FILTER_BACKEND: "typo" }),
-    /Unknown PI_SEARCH_FILTER_BACKEND/,
-  );
-  assert.throws(
-    () => createYesNoFilter({ PI_SEARCH_FILTER_BACKEND: "qwen3-reranker" }),
-    /requires PI_SEARCH_FILTER_BASE_URL/,
-  );
+void test("backend selection defaults to Qwen, rejects removed backend settings and requires an endpoint", () => {
+  assert.equal(resolveFilterBackend({ PI_SEARCH_FILTER_BASE_URL: "http://qwen" }).backend, "qwen3-reranker");
+  assert.throws(() => createYesNoFilter({ PI_SEARCH_FILTER_BACKEND: "reranq" }), /no longer supported/);
+  assert.throws(() => createYesNoFilter({ PI_SEARCH_FILTER_BACKEND: "qwen3-reranker" }), /no longer supported/);
+  assert.throws(() => createYesNoFilter({}), /requires PI_SEARCH_FILTER_PREDICTOR_BASE_URL/);
 });
 
 void test("Qwen uses official chat boundaries, default relevance instruction, and only lowercase yes/no", async () => {
@@ -162,7 +151,7 @@ void test("Qwen rejects invalid label tokens, collisions, tokenization and score
   }
 });
 
-void test("Qwen honors model/auth overrides without leaking the Reranq-specific API key", async () => {
+void test("Qwen honors model/auth overrides", async () => {
   for (const key of [undefined, "qwen-secret"]) {
     const { calls, request } = mockQwen();
     await createYesNoFilter(
@@ -170,7 +159,6 @@ void test("Qwen honors model/auth overrides without leaking the Reranq-specific 
         ...qwenEnv,
         PI_SEARCH_FILTER_MODEL: "served-alias",
         PI_SEARCH_FILTER_API_KEY: key,
-        RERANQ_API_KEY: "reranq-secret",
       },
       request,
     )("q", "doc");

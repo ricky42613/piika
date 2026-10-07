@@ -70,95 +70,52 @@ Main export:
 
 Set `PI_SEARCH_FILTER_ENABLED=1` (or `true`) before launching the agent. Default is off;
 `pi-serini-3tool` is unchanged even when this variable is set. Restart/reload the extension
-when changing the flag. Enabled `search` requires `filter_question`, a self-contained yes/no
-question tailored to the current reasoning step, in addition to `reason`, `query`, and optional `hits`.
+when changing the flag. With `PI_SEARCH_FILTER_QUESTION_SOURCE=agent` (the default), enabled
+`search` requires `filter_question`, a self-contained yes/no question tailored to the current
+reasoning step, in addition to `reason`, `query`, and optional `hits`. Qorrect-generated and JEV
+modes do not require an agent-provided `filter_question`.
 
 ```json
 {"reason":"Find evidence for the candidate's education","query":"Ada Lovelace mathematics education","hits":10,"filter_question":"Does this document describe Ada Lovelace's mathematics education or tutors?"}
 ```
 
-`hits` is the number of candidates **before** filtering (no automatic refill). The tool fetches
-each candidate document, following pagination, then classifies its **first 512 tokens** using
-the selected model (`reranq` by default). It keeps a document only if `P(Yes) > P(No)`. Ties are removed
-(intentionally stricter than the reference client's `>= 0.5`); surviving order and retrieval
-scores are unchanged. The agent still verifies evidence with `read_document`. Rejection can
-miss evidence beyond the document prefix; zero survivors is not proof of absence.
+#### Qorrect rollout-4 question generation
 
-Select the model adapter with `PI_SEARCH_FILTER_BACKEND=reranq|qwen3-reranker`.
-Omitting it preserves the existing Reranq behavior. Unknown values fail at initialization
-when filtering is enabled; disabled filtering and the three-tool interface ignore this setting.
-Restart/reload the extension after changing backend settings.
+Set `PI_SEARCH_FILTER_QUESTION_SOURCE=qorrect` to have the separate
+`ricky42613/qorrect-rollout4` **policy** generate one filter question per search;
+`search` still requires `reason` and `query`, but not `filter_question`. The rollout-4
+prompt uses `PI_SEARCH_ORIGINAL_QUESTION` (set by the benchmark runner), the current
+`reason`, and the current `query`. It matches the model repository's `prompts.py`;
+previously seen `clue_docs` are **excluded by default** to match training. To opt into
+out-of-training-distribution seen-document context, explicitly set
+`PI_SEARCH_FILTER_GENERATOR_INCLUDE_SEEN_DOCS=1` (only relevant with the clue-docs
+interface). Use `PI_SEARCH_FILTER_GENERATOR_BASE_URL` for the running vLLM
+`/v1/completions` server, and override `PI_SEARCH_FILTER_GENERATOR_MODEL` if the served
+model alias differs from `ricky42613/qorrect-rollout4`. The generation defaults are
+64 output tokens, temperature 1, top-p 1 and top-k 0 with thinking disabled;
+`PI_SEARCH_FILTER_GENERATOR_MAX_TOKENS` and `PI_SEARCH_FILTER_GENERATOR_TEMPERATURE`
+can override the first two. The model cache alone does **not** start a server.
 
-| Backend | Default model | Endpoint | Labels |
-|---|---|---|---|
-| `reranq` (default) | `reranq-filter` | `http://127.0.0.1:8150/v1` | `Yes`, ` Yes`, `No`, ` No` single-token variants |
-| `qwen3-reranker` | `Qwen/Qwen3-Reranker-4B` | Explicit `PI_SEARCH_FILTER_BASE_URL` required | Exactly `yes`, `no` |
+Qorrect only **writes questions**. Qwen (the default predictor) scores them:
+`PI_SEARCH_FILTER_PREDICTOR=qwen`. JEV instead uses its own fixed question;
+`PI_SEARCH_FILTER_PREDICTOR=jev` does not invoke Qorrect.
+`PI_SEARCH_FILTER_BACKEND` and the Reranq filter are no longer supported.
 
-Override with `PI_SEARCH_FILTER_BASE_URL`, `PI_SEARCH_FILTER_MODEL`, and optionally
-`PI_SEARCH_FILTER_API_KEY` (`RERANQ_API_KEY` fallback applies **only** to the Reranq backend).
-The base URL may include `/v1` or be the server root. Clear stale endpoint/model overrides
-when switching models. `PI_SEARCH_FILTER_MODEL` must match the server's served model name.
-Historical run scripts/snapshots are not modified.
+`hits` is the maximum number returned after filtering; Piika scores BM25's top
+`REREANK_DEPTH` candidates (default 50, capped at 100), keeps their original order,
+and does not refill. A rejection can miss evidence later in a document, and zero
+survivors do not prove absence. Failures do not silently bypass the filter.
 
-**Serving requirements:**
-
-- Reranq uses `/tokenize` + `/generative_scoring` (a nonstandard endpoint supported by the
-  existing Reranq vLLM 0.22.1 service). It accepts complete prompt token IDs and explicit
-  `label_token_ids` with `apply_softmax=true`, returning the probability of the **first**
-  label as `data[0].score`.
-- Qwen defaults to `/tokenize` + `/score`, compatible with the pooling service at
-  `http://127.0.0.1:8152`, served model name `qwen3-reranker-4b`. The server must use
-  Qwen's reranker chat template (honoring the request's `instruction`) and the lowercase
-  `no`/`yes` classifier. Requests set `use_activation=true`; scores must be normalized
-  probabilities, **not raw logits**. The service must honor `max_tokens_per_doc`,
-  `max_tokens_per_query=0`, and `truncate_prompt_tokens=null`: truncate only the document,
-  preserve the whole question/template, and error on context overflow.
-- Optionally, Qwen can use the token-ID protocol via
-  `PI_SEARCH_FILTER_API=generative_scoring`; otherwise its default is `score`.
-  Reranq supports only `generative_scoring`. No automatic protocol fallback occurs.
-
-Use at least 8192 tokens of server context. `/rerank` is deliberately unused because
-Piika keeps original retrieval order. A generic OpenAI chat endpoint is not interchangeable.
-The Hugging Face model URL is not an inference URL; Piika does not download/deploy weights
-or allocate GPUs. No fallback to chat completions or unfiltered retrieval is performed.
-
-Reranq classification matches `reranq/prompts.py` and `serving/client.py`:
-
-```text
-Filter question:
-{filter_question}
-
-Document:
-{document first 512 tokens}
-
-Answer the filter question using only this document.
-Answer exactly Yes or No.
-
-Answer:
-```
-
-Prefix, document and suffix are tokenized separately via the model server's `/tokenize`
-(`add_special_tokens=false`); Reranq uses no chat template. Document budget is
-`min(512, 8191 - prefixTokens - suffixTokens)`, reserving one position in the 8192-token
-context. The question and instructions are never truncated; an oversized question errors.
-No local tokenizer, Python dependency, or model weights are needed in Piika.
-
-For Reranq, the client obtains the single-token variants among `Yes`, ` Yes`, `No`, and ` No`, deduplicates
-them within each class, and sends complete prompt IDs to `/generative_scoring`. It queries
-each Yes variant as the first label with the same normalization set and `apply_softmax=true`,
-then sums their scores. `noProbability = 1 - yesProbability`.
-These are **normalized Yes/No class probabilities**, not the old full-vocabulary raw token
-probabilities. Tool details explicitly record backend, prompt version, `probabilitySemantics`, model, prompt tokens,
-retained document tokens, truncation, scoring request count and decisions. The existing
-`yesLogprob`/`noLogprob` fields now mean logs of class probabilities (`null` for log(0)).
-Token counts describe the scoring prompt, not provider-reported/billed usage.
-
-Documents are evaluated sequentially; each HTTP request has a 180-second timeout and honors
-cancellation. Missing documents, invalid scores, tokenization errors, context overflow, and
-HTTP errors fail the tool call rather than silently bypassing filtering. Full documents are
-sent to the tokenizer endpoint for counting. With `generative_scoring`, only the retained
-prefix token IDs are sent for scoring. With `score`, the full document text is sent and the
-server applies the requested document-only token budget before constructing the prompt.
+Qwen defaults to `Qwen/Qwen3-Reranker-4B` with `/tokenize` + `/score` and lowercase
+`yes`/`no` labels. Set `PI_SEARCH_FILTER_PREDICTOR_BASE_URL` (or
+`PI_SEARCH_FILTER_BASE_URL`) to its running service; optionally override the served
+model with `PI_SEARCH_FILTER_PREDICTOR_MODEL` (or `PI_SEARCH_FILTER_MODEL`).
+Qwen also supports `PI_SEARCH_FILTER_API=generative_scoring` or
+`vllm_prompt_logprobs`; JEV uses `systemone` and requires its own endpoint/key.
+The endpoint may include `/v1`. Qwen keeps a document only when its activated Yes
+probability exceeds the configured threshold (default 0.5); JEV keeps it only when
+true probability exceeds false probability. Errors, missing documents, and invalid
+responses fail closed. `/rerank` is not used.
 
 #### Qwen3-Reranker filter ablation
 
@@ -187,9 +144,9 @@ With `/generative_scoring`, Piika builds the prompt IDs and the server must not 
 second chat template. `promptTokensSource="constructed_token_ids"` marks the derived count,
 not provider-reported usage. Both paths preserve the question and assistant suffix.
 
-This is still **filtering, not reranking**: both backends use the strict `score > 0.5` rule,
-keep original retrieval order/scores, and never refill. No threshold/top-k policy changes
-are introduced. Equal thresholds do not imply equally calibrated scores or retention rates.
+This is still **filtering, not reranking**: Qwen keeps original retrieval order/scores,
+uses the strict `score > threshold` rule and never refills. Different scoring models do
+not necessarily have equally calibrated scores or retention rates.
 512 tokens can cover different text under different tokenizers; for an offline replay
 comparison, fix the same question, candidate set, and document text prefix. The replay
 pipeline itself is not part of this backend switch.
@@ -198,7 +155,7 @@ Example DL19 exact-30 run with the deployed Qwen pooling service:
 
 ```bash
 PI_SEARCH_FILTER_ENABLED=1 \
-PI_SEARCH_FILTER_BACKEND=qwen3-reranker \
+PI_SEARCH_FILTER_PREDICTOR=qwen \
 PI_SEARCH_FILTER_BASE_URL=http://127.0.0.1:8152 \
 PI_SEARCH_FILTER_MODEL=qwen3-reranker-4b \
 PI_SEARCH_FILTER_API=score \
@@ -215,8 +172,6 @@ npm run run:benchmark:query-set:sharded-shared-bm25 -- \
 ```
 
 Use `--dry-run` first (validates the launch plan, **not** the remote scoring service).
-For the Reranq arm, change backend/base URL/model together to
-`reranq`, `http://127.0.0.1:8150/v1`, `reranq-filter`.
 For the no-filter arm, set `PI_SEARCH_FILTER_ENABLED=0`.
 Keep agent, query set, document budget, hits policy, timeout, and exact output count fixed.
 Record endpoint/model/backend settings with the run; successful per-document scores also

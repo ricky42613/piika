@@ -1,5 +1,10 @@
-import { createFilterQuestionGenerator } from "./filter_question";
-import { filterQuestionSource, filterThreshold } from "./filter_config";
+import { createFilterQuestionGenerator, qorrectSeenDocsEnabled } from "./filter_question";
+import {
+  filterPredictor,
+  filterQuestionSource,
+  filterThreshold,
+  rereankDepth,
+} from "./filter_config";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { resolvePiSearchExtensionConfigFromEnv, type PiSearchExtensionConfig } from "./config";
 import {
@@ -12,6 +17,8 @@ import {
 } from "./prompt_policy";
 import {
   DirectReadDocumentParamsSchema,
+  ClueDocsDirectSearchParamsSchema,
+  ClueDocsFilteredDirectSearchParamsSchema,
   DirectSearchParamsSchema,
   FilteredDirectSearchParamsSchema,
   PlainSearchParamsSchema,
@@ -32,7 +39,12 @@ import {
   executeReadSearchResultsTool,
   executeSearchTool,
 } from "./tool_handlers";
-import { parsePiSearchToolInterface, type PiSearchToolInterface } from "./tool_interface";
+import {
+  isDirectTwoToolInterface,
+  parsePiSearchToolInterface,
+  usesSearchClueDocs,
+  type PiSearchToolInterface,
+} from "./tool_interface";
 
 import { createYesNoFilter, searchFilterGuidance, isSearchFilterEnabled } from "./yes_no_filter";
 
@@ -67,9 +79,15 @@ export function registerPiSearchExtension(
   const spillDir = new ManagedTempSpillDir(options.spillDirPrefix ?? "pi-search-extension-");
   const toolInterface = resolveToolInterface(options);
   const filterEnabled = isSearchFilterEnabled(toolInterface);
-  const questionSource = filterEnabled ? filterQuestionSource() : "agent";
+  const directTwoTool = isDirectTwoToolInterface(toolInterface);
+  const clueDocsEnabled = usesSearchClueDocs(toolInterface);
+  const predictor = filterEnabled ? filterPredictor() : "qwen";
+  const questionSource = filterEnabled
+    ? predictor === "jev" ? "general" : filterQuestionSource()
+    : "agent";
   const threshold = filterEnabled ? filterThreshold() : 0.5;
-  const generatesFilterQuestion = filterEnabled && questionSource === "qorrect";
+  const depth = filterEnabled ? rereankDepth() : undefined;
+  const generatesFilterQuestion = filterEnabled && predictor !== "jev" && questionSource === "qorrect";
   const submitNowDelayMs = getSubmitNowDelayMs();
   let spillSequence = 0;
   let submitNowTimer: ReturnType<typeof setTimeout> | null = null;
@@ -104,9 +122,14 @@ export function registerPiSearchExtension(
     questionSource,
     filterThreshold: threshold,
     generateFilterQuestion: generatesFilterQuestion ? createFilterQuestionGenerator() : undefined,
+    rerankDepth: depth,
+    toolInterface,
+    qorrectSeenClueDocids: new Set<string>(),
+    includeQorrectSeenDocs: generatesFilterQuestion && qorrectSeenDocsEnabled(),
+    predictor,
   };
   const pyseriniRestPaginatedRead =
-    toolInterface === "pyserini-rest-2tool" &&
+    directTwoTool &&
     extensionConfig.backend.kind === "pyserini-rest" &&
     extensionConfig.backend.readMode === "paginated";
 
@@ -191,17 +214,22 @@ export function registerPiSearchExtension(
     name: "search",
     label: "Search",
     description:
-      toolInterface === "pyserini-rest-2tool"
+      directTwoTool
         ? "Search the configured backend and return ranked hits directly. The first argument must be reason, a brief rationale of at most 100 words."
         : "Search the configured pi-search backend using a raw query string. The first argument must be reason, a brief rationale of at most 100 words.",
     promptSnippet:
-      toolInterface === "pyserini-rest-2tool"
+      directTwoTool
         ? "Always supply reason first, under 100 words. Use query for a concise lexical query. The tool returns ranked hits directly; inspect promising docids with read_document."
         : "Always supply reason first, under 100 words. Use query for a concise raw search string based on the original wording or one grounded refinement. The tool returns a search_id plus the first page of results.",
     promptGuidelines:
-      toolInterface === "pyserini-rest-2tool"
+      directTwoTool
         ? [
             ...(filterEnabled ? [searchFilterGuidance()] : []),
+            ...(clueDocsEnabled
+              ? [
+                  "Every search call must include clue_docs as a comma-separated string. Use an empty string when this query is based only on the original question or general reasoning. If this query was motivated by facts learned from read_document, list those source docids separated by commas.",
+                ]
+              : []),
             "Always provide reason first. Keep it specific and under 100 words.",
             "Use query as a short raw lexical query string, not a structured object and not raw Lucene syntax.",
             "The search result itself is the visible ranked list; there is no search_id or result-page browsing tool in this condition.",
@@ -216,13 +244,17 @@ export function registerPiSearchExtension(
             "After browsing a ranking that surfaces plausible candidates, inspect one with read_document(docid).",
           ],
     parameters:
-      toolInterface === "pyserini-rest-2tool"
-        ? filterEnabled && questionSource === "agent"
-          ? FilteredDirectSearchParamsSchema
-          : DirectSearchParamsSchema
+      directTwoTool
+        ? clueDocsEnabled
+          ? filterEnabled && predictor !== "jev" && questionSource === "agent"
+            ? ClueDocsFilteredDirectSearchParamsSchema
+            : ClueDocsDirectSearchParamsSchema
+          : filterEnabled && predictor !== "jev" && questionSource === "agent"
+            ? FilteredDirectSearchParamsSchema
+            : DirectSearchParamsSchema
         : PlainSearchParamsSchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      return toolInterface === "pyserini-rest-2tool"
+      return directTwoTool
         ? executeDirectSearchTool(params, signal, ctx, toolDeps)
         : executeSearchTool(params, signal, ctx, toolDeps);
     },
@@ -253,15 +285,15 @@ export function registerPiSearchExtension(
     name: "read_document",
     label: "Read Document",
     description:
-      toolInterface === "pyserini-rest-2tool" && !pyseriniRestPaginatedRead
+      directTwoTool && !pyseriniRestPaginatedRead
         ? "Fetch a full document by docid from the configured backend. The first argument must be reason, a brief rationale of at most 100 words."
         : "Read a retrieved document by docid. Supports offset and limit for paginated line-based reading, similar to the built-in read tool. The first argument must be reason, a brief rationale of at most 100 words.",
     promptSnippet:
-      toolInterface === "pyserini-rest-2tool" && !pyseriniRestPaginatedRead
+      directTwoTool && !pyseriniRestPaginatedRead
         ? "Always supply reason first, with a brief rationale of at most 100 words. Then fetch the full document by docid; no offset or limit is needed."
         : "Always supply reason first, with a brief rationale of at most 100 words. Then read a retrieved document by docid in paginated line-based chunks using offset and limit.",
     promptGuidelines:
-      toolInterface === "pyserini-rest-2tool" && !pyseriniRestPaginatedRead
+      directTwoTool && !pyseriniRestPaginatedRead
         ? [
             "Always provide reason as the first argument. Keep it specific and under 100 words.",
             "Use read_document to verify evidence from a specific docid before answering.",
@@ -274,11 +306,11 @@ export function registerPiSearchExtension(
             "If a document is truncated and still looks relevant, continue reading the same document with the suggested next offset before launching many new searches.",
           ],
     parameters:
-      toolInterface === "pyserini-rest-2tool" && !pyseriniRestPaginatedRead
+      directTwoTool && !pyseriniRestPaginatedRead
         ? DirectReadDocumentParamsSchema
         : ReadDocumentParamsSchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      return toolInterface === "pyserini-rest-2tool" && !pyseriniRestPaginatedRead
+      return directTwoTool && !pyseriniRestPaginatedRead
         ? executeDirectReadDocumentTool(params, signal, ctx, toolDeps)
         : executeReadDocumentTool(params, signal, ctx, toolDeps);
     },

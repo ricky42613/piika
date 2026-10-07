@@ -8,7 +8,8 @@ import {
 } from "../../src/pi-search/filter_backends";
 
 const env = {
-  PI_SEARCH_FILTER_BACKEND: "qwen3-reranker",
+  PI_SEARCH_FILTER_PREDICTOR: "qwen",
+  PI_SEARCH_FILTER_QUESTION_SOURCE: "general",
   PI_SEARCH_FILTER_BASE_URL: "http://127.0.0.1:8152/v1",
   PI_SEARCH_FILTER_MODEL: "qwen3-reranker-4b",
 };
@@ -49,14 +50,17 @@ function mockScore(
   return { calls, request };
 }
 
-void test("Qwen defaults to score; Reranq stays generative; invalid protocol combinations fail early", () => {
+void test("Qwen defaults to score and invalid protocol combinations fail early", () => {
   assert.equal(resolveFilterBackend(env).scoringApi, "score");
-  assert.equal(resolveFilterBackend({}).scoringApi, "generative_scoring");
+  assert.equal(resolveFilterBackend({ PI_SEARCH_FILTER_BASE_URL: "http://qwen" }).scoringApi, "score");
   assert.throws(
     () => createYesNoFilter({ ...env, PI_SEARCH_FILTER_API: "rerank" }),
     /Unknown PI_SEARCH_FILTER_API/,
   );
-  assert.throws(() => createYesNoFilter({ PI_SEARCH_FILTER_API: "score" }), /Reranq requires/);
+  assert.throws(
+    () => createYesNoFilter({ ...env, PI_SEARCH_FILTER_API: "systemone" }),
+    /Qwen requires/,
+  );
 });
 
 void test("score sends the search query, relevance instruction, document-only budget and explicit activation", async () => {

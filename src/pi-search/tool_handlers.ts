@@ -27,9 +27,10 @@ import type {
   ToolTimingBreakdown,
 } from "./tool_types";
 
-import type { FilterQuestionSource } from "./filter_config";
+import type { FilterPredictor, FilterQuestionSource } from "./filter_config";
+import type { PiSearchToolInterface } from "./tool_interface";
 import type { FilterQuestionGenerator } from "./filter_question";
-import type { DocumentFilter, FilterScore } from "./yes_no_filter";
+import { JEV_GENERAL_PROMPT, type DocumentFilter, type FilterScore } from "./yes_no_filter";
 
 const SEARCH_QUERY_MODE = "plain";
 const SEARCH_CACHE_K = 1000;
@@ -37,6 +38,9 @@ const SEARCH_FIRST_PAGE_LIMIT = 5;
 const SEARCH_RESULTS_DEFAULT_LIMIT = 10;
 const DIRECT_SEARCH_DEFAULT_LIMIT = 5;
 const DIRECT_SEARCH_MAX_LIMIT = 100;
+const DEFAULT_REREANK_DEPTH = 50;
+const MAX_QORRECT_SEEN_DOCS = 5;
+const MAX_QORRECT_SEEN_DOC_CHARS = 4000;
 
 type SpillSequence = () => number;
 type ToolExecutionContext = { cwd: string };
@@ -48,8 +52,13 @@ type ToolHandlerDeps = {
   nextSpillSequence: SpillSequence;
   documentFilter?: DocumentFilter;
   questionSource?: FilterQuestionSource;
+  predictor?: FilterPredictor;
   filterThreshold?: number;
   generateFilterQuestion?: FilterQuestionGenerator;
+  rerankDepth?: number;
+  toolInterface?: PiSearchToolInterface;
+  qorrectSeenClueDocids?: Set<string>;
+  includeQorrectSeenDocs?: boolean;
 };
 
 function formatReadDocumentText(parsed: {
@@ -131,6 +140,45 @@ function normalizeDirectSearchLimit(value: number | undefined): number {
   return Math.min(parsed, DIRECT_SEARCH_MAX_LIMIT);
 }
 
+function normalizeRereankDepth(value: number | undefined): number {
+  const parsed = normalizePositiveInteger(value, DEFAULT_REREANK_DEPTH);
+  return Math.min(parsed, DIRECT_SEARCH_MAX_LIMIT);
+}
+
+function parseClueDocids(value: string | undefined): string[] {
+  if (typeof value !== "string") return [];
+  const seen = new Set<string>();
+  const docids: string[] = [];
+  for (const raw of value.split(",")) {
+    const docid = raw.trim();
+    if (!docid || seen.has(docid)) continue;
+    seen.add(docid);
+    docids.push(docid);
+  }
+  return docids;
+}
+
+function renderSeenDocForQorrect(doc: { docid: string; title?: string | null; text: string }): string {
+  const parts = [] as string[];
+  if (doc.title?.trim()) parts.push(doc.title.trim());
+  parts.push(doc.text);
+  return parts.join("\n").slice(0, MAX_QORRECT_SEEN_DOC_CHARS);
+}
+
+async function loadQorrectSeenDocs(
+  docids: readonly string[],
+  backend: ReturnType<PiSearchBackendRuntime["getBackend"]>,
+  signal: AbortSignal | undefined,
+): Promise<string[]> {
+  const docs: string[] = [];
+  for (const docid of docids.slice(0, MAX_QORRECT_SEEN_DOCS)) {
+    const response = await backend.readDocument({ docid }, signal);
+    if (!response.found || !response.text) continue;
+    docs.push(renderSeenDocForQorrect({ docid: response.docid, title: response.title, text: response.text }));
+  }
+  return docs;
+}
+
 export async function executeSearchTool(
   params: PlainSearchParams,
   signal: AbortSignal | undefined,
@@ -190,12 +238,17 @@ export async function executeSearchTool(
 }
 
 export async function executeDirectSearchTool(
-  params: DirectSearchParams & { filter_question?: string },
+  params: DirectSearchParams & {
+    filter_question?: string;
+    clue_docs?: string;
+  },
   signal: AbortSignal | undefined,
   ctx: ToolExecutionContext,
   deps: ToolHandlerDeps,
 ) {
   const backend = deps.backendRuntime.getBackend(ctx.cwd);
+  const hasClueDocsArg = typeof params.clue_docs === "string";
+  const clueDocs = hasClueDocsArg ? params.clue_docs!.trim() : undefined;
   const rawQuery = String(params.query ?? "").trim();
   if (!rawQuery) {
     throw new PiSearchInvalidToolArgumentsError(
@@ -203,15 +256,26 @@ export async function executeDirectSearchTool(
       "query must be a non-empty string.",
     );
   }
-  const source = deps.questionSource ?? (deps.generateFilterQuestion ? "qorrect" : "agent");
+  const source = deps.documentFilter && deps.predictor === "jev"
+    ? "jev"
+    : (deps.questionSource ?? (deps.generateFilterQuestion ? "qorrect" : "agent"));
   if (deps.documentFilter && source === "qorrect" && !deps.generateFilterQuestion) {
     throw new Error("Qorrect question generator is not configured.");
   }
-  const filterQuestion = source === "general"
-    ? rawQuery
-    : deps.documentFilter && source === "qorrect" && deps.generateFilterQuestion
-      ? await deps.generateFilterQuestion(rawQuery, signal)
-      : params.filter_question?.trim();
+  const clueDocids = parseClueDocids(params.clue_docs);
+  if (source === "qorrect" && deps.includeQorrectSeenDocs && deps.qorrectSeenClueDocids) {
+    for (const docid of clueDocids) deps.qorrectSeenClueDocids.add(docid);
+  }
+  const qorrectSeenDocs =
+    deps.documentFilter && source === "qorrect" && deps.includeQorrectSeenDocs && deps.qorrectSeenClueDocids?.size
+      ? await loadQorrectSeenDocs(Array.from(deps.qorrectSeenClueDocids), backend, signal)
+      : [];
+  const filterQuestion =
+    source === "jev" || source === "general"
+      ? rawQuery
+      : deps.documentFilter && source === "qorrect" && deps.generateFilterQuestion
+        ? await deps.generateFilterQuestion(rawQuery, params.reason, signal, qorrectSeenDocs)
+        : params.filter_question?.trim();
   if (deps.documentFilter && !filterQuestion) {
     throw new PiSearchInvalidToolArgumentsError(
       "search arguments",
@@ -219,10 +283,11 @@ export async function executeDirectSearchTool(
     );
   }
   const limit = normalizeDirectSearchLimit(params.hits);
+  const candidateLimit = deps.documentFilter ? normalizeRereankDepth(deps.rerankDepth) : limit;
   const response = await backend.search(
     {
       query: rawQuery,
-      limit,
+      limit: candidateLimit,
     },
     signal,
   );
@@ -260,41 +325,50 @@ export async function executeDirectSearchTool(
     }
     hits.push(hit);
   }
+  const returnedHits = deps.documentFilter ? hits.slice(0, limit) : hits;
   const filterDetails = deps.documentFilter
     ? {
-        question: filterQuestion,
+        question: source === "jev" ? JEV_GENERAL_PROMPT : filterQuestion,
         inputSource: source,
         threshold: deps.filterThreshold ?? 0.5,
+        requestedHits: limit,
+        rereankDepth: candidateLimit,
         candidateCount: response.hits.length,
         keptCount: hits.length,
+        returnedCount: returnedHits.length,
         scores: filterScores,
       }
     : undefined;
   const renderedText =
     (filterDetails
-      ? `Filter kept ${hits.length} of ${response.hits.length} candidates (score > ${deps.filterThreshold ?? 0.5}).\n`
+      ? `Filter kept ${hits.length} of ${response.hits.length} candidates (score > ${deps.filterThreshold ?? 0.5}); returning ${returnedHits.length} of requested ${limit}.\n`
       : "") +
     formatDirectSearchText({
       rawQuery,
       limit,
-      hits,
+      hits: returnedHits,
     });
   const rendered = truncateSearchOutput(
     deps.spillDir,
     `direct_search_${deps.nextSpillSequence()}.txt`,
     renderedText,
-    JSON.stringify({ rawQuery, limit, hits, filter: filterDetails }, null, 2),
+    JSON.stringify(
+      { rawQuery, limit, candidateLimit, clueDocs, hits: returnedHits, filter: filterDetails },
+      null,
+      2,
+    ),
   );
-  const docids = hits.map((hit) => hit.docid);
+  const docids = returnedHits.map((hit) => hit.docid);
   return {
     content: [{ type: "text" as const, text: rendered.text }],
     details: {
-      toolInterface: "pyserini-rest-2tool",
+      toolInterface: deps.toolInterface ?? "pyserini-rest-2tool",
       rawQuery,
       queryMode: SEARCH_QUERY_MODE,
+      ...(hasClueDocsArg ? { clueDocs } : {}),
       k: limit,
-      returnedRankStart: hits.length > 0 ? 1 : 0,
-      returnedRankEnd: hits.length,
+      returnedRankStart: returnedHits.length > 0 ? 1 : 0,
+      returnedRankEnd: returnedHits.length,
       ...(filterDetails ? { filter: filterDetails } : {}),
       retrievedDocids: docids,
       previewedDocids: docids,

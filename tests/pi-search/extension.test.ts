@@ -251,6 +251,42 @@ void test("registerPiSearchExtension exposes a two-tool prompt surface for pyser
   assert.match(tools[1].promptSnippet ?? "", /fetch the full document by docid/);
 });
 
+void test("registerPiSearchExtension exposes clue_docs direct two-tool surface", () => {
+  const tools: Array<{
+    name: string;
+    parameters?: { properties?: Record<string, unknown>; required?: string[] };
+    promptGuidelines?: string[];
+  }> = [];
+  const pi = {
+    on: () => {},
+    registerTool: (tool: {
+      name: string;
+      parameters?: { properties?: Record<string, unknown>; required?: string[] };
+      promptGuidelines?: string[];
+    }) => tools.push(tool),
+  };
+
+  registerPiSearchExtension(pi as never, {
+    toolInterface: "pyserini-rest-2tool-clue-docs",
+    resolveConfig: () =>
+      buildPyseriniRestExtensionConfig({
+        baseUrl: "http://127.0.0.1:8081",
+        index: "browsecomp-plus",
+      }),
+  });
+
+  assert.deepEqual(
+    tools.map((tool) => tool.name),
+    ["search", "read_document"],
+  );
+  assert.deepEqual(tools[0].parameters?.properties?.clue_docs, {
+    type: "string",
+    description:
+      "Comma-separated docids of documents already read that motivated or informed this search query. Use an empty string when the query is not based on any specific document.",
+  });
+  assert.match((tools[0].promptGuidelines ?? []).join("\n"), /comma-separated string/);
+});
+
 void test("registerPiSearchExtension defaults to the direct two-tool surface", () => {
   const tools: Array<{ name: string }> = [];
   const pi = {

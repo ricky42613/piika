@@ -160,7 +160,7 @@ Options:
   --model <model>
   --prompt-variant <variant>
   --output-mode <answer|ranked_list|answer+ranked_list>
-  --tool-interface <pyserini-rest-2tool|pi-serini-3tool>
+  --tool-interface <pyserini-rest-2tool|pyserini-rest-2tool-clue-docs|pi-serini-3tool>
   --ranked-list-depth <n>        Max requested ranked-list length (default: 1000)
   --ranked-list-count <n>        Require exactly this many ranked docids
   --output-dir <dir>

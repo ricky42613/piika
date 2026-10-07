@@ -32,9 +32,11 @@ export type SearchPage = {
 };
 
 export type SearchDetails = {
+  toolInterface?: string;
   searchId: string;
   rawQuery: string;
   queryMode: string;
+  clueDocs?: string;
   k: number;
   totalCached: number;
   returnedRankStart: number;
