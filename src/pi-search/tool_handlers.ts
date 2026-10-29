@@ -1,4 +1,5 @@
 import type { PiSearchBackendRuntime } from "./searcher/runtime";
+import { executeSearchPipeline } from "./search_pipeline";
 import { PiSearchInvalidToolArgumentsError, PiSearchToolExecutionError } from "./protocol/errors";
 import type {
   DirectReadDocumentParams,
@@ -196,7 +197,8 @@ export async function executeDirectSearchTool(
     );
   }
   const limit = normalizeDirectSearchLimit(params.hits);
-  const response = await backend.search(
+  const response = await executeSearchPipeline(
+    backend,
     {
       query: rawQuery,
       limit,
