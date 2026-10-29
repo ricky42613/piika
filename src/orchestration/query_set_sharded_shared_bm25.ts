@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import type { ChildProcess } from "node:child_process";
+import { isDeepStrictEqual } from "node:util";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
@@ -31,6 +32,8 @@ import {
 import { resolveGitCommitProvenance } from "../runtime/git";
 import { writeRankedListTrecRunFile } from "../evaluation/ranked_list_output";
 import { hasPiSearchOutputMode } from "../pi-search/agent_prompt";
+import { PiSearchRerankingConfigSchema, type PiSearchRerankingConfig } from "../pi-search/config";
+import { compileJsonValidator } from "../pi-search/protocol/validation";
 
 type Args = {
   benchmarkId?: string;
@@ -108,6 +111,7 @@ type PersistedRunSetup = {
   shardRetryMode?: string;
   toolInterface?: string;
   searchBackendKind?: string;
+  reranking?: PiSearchRerankingConfig;
   outputMode?: string;
   outputModes?: string[];
   rankedListDepth?: string;
@@ -589,6 +593,7 @@ function buildPersistedRunSetup(args: {
   timeoutSeconds: number;
   indexPath: string;
   backendKind: "shared-bm25" | "pyserini-rest";
+  reranking: PiSearchRerankingConfig;
   outputMode: string;
   outputModes: ShardedLaunchPlan["outputModes"];
   toolInterface: ShardedLaunchPlan["toolInterface"];
@@ -611,6 +616,7 @@ function buildPersistedRunSetup(args: {
     shardRetryMode: resolveEnvValue("SHARD_RETRY_MODE"),
     toolInterface: args.toolInterface,
     searchBackendKind: args.backendKind,
+    reranking: args.reranking,
     outputMode: args.outputMode,
     outputModes: [...args.outputModes],
     rankedListDepth: hasPiSearchOutputMode(args.outputModes, "ranked_list")
@@ -623,7 +629,39 @@ function buildPersistedRunSetup(args: {
   };
 }
 
-function writeMergedRunMetadata(plan: ShardedLaunchPlan, totalQueries: number): void {
+const rerankingConfigValidator = compileJsonValidator(PiSearchRerankingConfigSchema);
+
+export function readShardRerankingConfig(
+  shardOutputRoot: string,
+  shardNames: string[],
+): PiSearchRerankingConfig {
+  let shared: PiSearchRerankingConfig | undefined;
+  for (const shardName of shardNames) {
+    const setupPath = resolve(REPO_ROOT, shardOutputRoot, shardName, "run_setup.json");
+    let config: unknown = { mode: "off" };
+    if (existsSync(setupPath)) {
+      const setup: unknown = JSON.parse(readFileSync(setupPath, "utf8"));
+      if (!setup || typeof setup !== "object" || Array.isArray(setup)) {
+        throw new Error(`Invalid run setup for shard ${shardName}.`);
+      }
+      if ("reranking" in setup) config = setup.reranking;
+    }
+    if (!rerankingConfigValidator.check(config)) {
+      throw new Error(`Invalid reranking config for shard ${shardName}.`);
+    }
+    if (shared && !isDeepStrictEqual(shared, config)) {
+      throw new Error(`Cannot merge shards with different reranking configs (${shardName}).`);
+    }
+    shared = config;
+  }
+  return shared ?? { mode: "off" };
+}
+
+function writeMergedRunMetadata(
+  plan: ShardedLaunchPlan,
+  totalQueries: number,
+  reranking: PiSearchRerankingConfig,
+): void {
   const benchmarkConfig = resolveBenchmarkConfig({
     benchmarkId: plan.benchmarkId,
     querySetId: plan.querySetId,
@@ -652,6 +690,7 @@ function writeMergedRunMetadata(plan: ShardedLaunchPlan, totalQueries: number): 
         timeoutSeconds: plan.timeoutSeconds,
         indexPath: plan.indexPath,
         backendKind: plan.backendKind,
+        reranking,
         outputMode: plan.outputMode,
         outputModes: plan.outputModes,
         toolInterface: plan.toolInterface,
@@ -670,6 +709,7 @@ export function mergeShardOutputs(
   shardNames: string[],
   totalQueries: number,
 ): void {
+  const reranking = readShardRerankingConfig(plan.shardOutputRoot, shardNames);
   mkdirSync(resolve(REPO_ROOT, plan.mergedOutputDir), { recursive: true });
   for (const shardName of shardNames) {
     const shardRoot = `${plan.shardOutputRoot}/${shardName}`;
@@ -688,7 +728,7 @@ export function mergeShardOutputs(
       copyUniqueFile(relativePath, `${plan.mergedOutputDir}/${fromShard}`);
     }
   }
-  writeMergedRunMetadata(plan, totalQueries);
+  writeMergedRunMetadata(plan, totalQueries, reranking);
   if (hasPiSearchOutputMode(plan.outputModes, "ranked_list")) {
     writeRankedListTrecRunFile({ runDir: resolve(REPO_ROOT, plan.mergedOutputDir) });
   }

@@ -258,6 +258,22 @@ export function buildMockExtensionConfig(options: {
   };
 }
 
+const rerankingConfigValidator = compileJsonValidator(PiSearchRerankingConfigSchema);
+
+export function parsePiSearchRerankingConfig(text: string): PiSearchRerankingConfig {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    // Do not echo the input: an invalid file could contain inline credentials.
+    throw new Error("Failed to parse reranking config: expected valid JSON.");
+  }
+  if (rerankingConfigValidator.check(value)) return value;
+  throw new Error(
+    `Invalid reranking config: ${formatValidationErrors(rerankingConfigValidator.errors(value))}`,
+  );
+}
+
 export function parsePiSearchExtensionConfig(text: string): PiSearchExtensionConfig {
   let value: unknown;
   try {

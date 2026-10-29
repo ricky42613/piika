@@ -15,7 +15,9 @@ import {
   buildAnseriniBm25TcpExtensionConfig,
   buildPyseriniRestExtensionConfig,
   parsePiSearchExtensionConfig,
+  parsePiSearchRerankingConfig,
   type PiSearchExtensionConfig,
+  type PiSearchRerankingConfig,
 } from "../pi-search/config";
 import {
   extractPiSearchFailureMetadata,
@@ -130,6 +132,7 @@ type PersistedRunSetup = {
   shardRetryMode?: string;
   toolInterface?: string;
   searchBackendKind?: string;
+  reranking?: PiSearchRerankingConfig;
   outputMode?: string;
   outputModes?: string[];
   rankedListDepth?: string;
@@ -451,6 +454,13 @@ function parseArgs(argv: string[]) {
   }
 
   const outputModes = parsePiSearchOutputModes(out.outputMode);
+  const toolInterface = parsePiSearchToolInterface(out.toolInterface);
+  const reranking = out.rerankingConfig
+    ? parsePiSearchRerankingConfig(readFileSync(resolve(out.rerankingConfig), "utf8"))
+    : undefined;
+  if (reranking && reranking.mode !== "off" && toolInterface !== "pyserini-rest-2tool") {
+    throw new Error("Reranking requires pyserini-rest-2tool.");
+  }
   return {
     benchmarkId: benchmarkConfig.benchmark.id,
     querySetId: benchmarkConfig.querySetId,
@@ -470,7 +480,8 @@ function parseArgs(argv: string[]) {
     outputModes,
     rankedListDepth,
     rankedListCount,
-    toolInterface: parsePiSearchToolInterface(out.toolInterface),
+    toolInterface,
+    reranking,
   };
 }
 
@@ -1307,6 +1318,7 @@ function buildPersistedRunSetup(args: {
   indexPath: string;
   toolInterface: PiSearchToolInterface;
   searchBackendKind: string;
+  reranking?: PiSearchRerankingConfig;
   outputMode: string;
   outputModes: PiSearchOutputModes;
   rankedListDepth: number;
@@ -1329,6 +1341,7 @@ function buildPersistedRunSetup(args: {
     shardRetryMode: resolveEnvValue("SHARD_RETRY_MODE"),
     toolInterface: args.toolInterface,
     searchBackendKind: args.searchBackendKind,
+    reranking: args.reranking ?? { mode: "off" },
     outputMode: args.outputMode,
     outputModes: [...args.outputModes],
     rankedListDepth: hasPiSearchOutputMode(args.outputModes, "ranked_list")
@@ -1396,6 +1409,7 @@ async function main() {
     queries = queries.slice(0, args.limit);
   }
   const searchBackendConnection = await getSearchBackendConnection(process.cwd());
+  if (args.reranking) searchBackendConnection.config.reranking = args.reranking;
   const searchBackendKind = searchBackendConnection.config.backend.kind;
   console.log(`Using searchBackend=${searchBackendKind}`);
   writeFileSync(
@@ -1412,6 +1426,7 @@ async function main() {
         indexPath: args.indexPath,
         toolInterface: args.toolInterface,
         searchBackendKind,
+        reranking: searchBackendConnection.config.reranking,
         outputMode: args.outputMode,
         outputModes: args.outputModes,
         rankedListDepth: args.rankedListDepth,

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildMockExtensionConfig, parsePiSearchExtensionConfig } from "../../src/pi-search/config";
+import {
+  buildMockExtensionConfig,
+  parsePiSearchExtensionConfig,
+  parsePiSearchRerankingConfig,
+} from "../../src/pi-search/config";
 
 const backend = { kind: "mock", documents: [] };
 const pplx = {
@@ -24,6 +28,34 @@ const customized = { mode: "customized", candidateK: 50, generator, scorer: pplx
 function parse(reranking: unknown) {
   return parsePiSearchExtensionConfig(JSON.stringify({ backend, reranking }));
 }
+
+void test("standalone reranking JSON accepts the same modes as extension config", () => {
+  for (const config of [
+    { mode: "off" },
+    { mode: "fixed-template", candidateK: 50, scorer: qwen },
+    customized,
+  ]) {
+    assert.deepEqual(parsePiSearchRerankingConfig(JSON.stringify(config)), config);
+  }
+});
+
+void test("standalone reranking JSON rejects invalid input without echoing secrets", () => {
+  for (const text of [
+    '{"apiKey":"top-secret",',
+    JSON.stringify({ ...customized, generator: { ...generator, apiKey: "top-secret" } }),
+    JSON.stringify({ ...customized, scorer: qwen }),
+    JSON.stringify({ backend, reranking: customized }),
+  ]) {
+    assert.throws(
+      () => parsePiSearchRerankingConfig(text),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.doesNotMatch(error.message, /top-secret/);
+        return true;
+      },
+    );
+  }
+});
 
 void test("existing configs remain unchanged when reranking is omitted", () => {
   const config = buildMockExtensionConfig({ documents: [] });

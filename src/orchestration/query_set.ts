@@ -64,6 +64,11 @@ function parseArgs(argv: string[]): Args {
         args.toolInterface = next;
         index += 1;
         break;
+      case "--reranking-config":
+        if (!next || next.startsWith("--")) throw new Error(`${arg} requires a value`);
+        args.rerankingConfigPath = next;
+        index += 1;
+        break;
       case "--rankedListDepth":
       case "--ranked-list-depth":
         if (!next) throw new Error(`${arg} requires a value`);
@@ -161,6 +166,7 @@ Options:
   --prompt-variant <variant>
   --output-mode <answer|ranked_list|answer+ranked_list>
   --tool-interface <pyserini-rest-2tool|pi-serini-3tool>
+  --reranking-config <path>     JSON reranking config; overrides backend reranking
   --ranked-list-depth <n>        Max requested ranked-list length (default: 1000)
   --ranked-list-count <n>        Require exactly this many ranked docids
   --output-dir <dir>

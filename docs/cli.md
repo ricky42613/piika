@@ -225,6 +225,69 @@ For authenticated endpoints, either put the token in `PYSERINI_API_TOKEN` or set
 
 For the full backend configuration details, see `docs/pyserini-rest-search-provider.md`.
 
+#### Per-search reranking (single mode)
+
+Single mode accepts `--reranking-config <path>` with a JSON file containing only the
+reranking configuration, for example:
+
+```json
+{
+  "mode": "fixed-template",
+  "candidateK": 50,
+  "scorer": {
+    "provider": "qwen-reranker",
+    "baseUrl": "http://127.0.0.1:8003",
+    "model": "qwen3-reranker"
+  }
+}
+```
+
+```bash
+PYSERINI_REST_BASE_URL=http://127.0.0.1:8081 \
+PYSERINI_REST_INDEX=browsecomp-plus \
+piika run --mode single \
+  --benchmark browsecomp-plus --query-set q9 \
+  --tool-interface pyserini-rest-2tool \
+  --reranking-config ~/experiments/reranking.json
+```
+
+For customized criteria, use Qorrect with PPLX Decider:
+
+```json
+{
+  "mode": "customized",
+  "candidateK": 50,
+  "generator": {
+    "provider": "qorrect",
+    "baseUrl": "http://127.0.0.1:8001/v1",
+    "model": "qorrect",
+    "temperature": 0.3
+  },
+  "scorer": {
+    "provider": "pplx-decider",
+    "baseUrl": "http://127.0.0.1:8002/v1",
+    "model": "pplx-decider-flash-v1.2"
+  }
+}
+```
+
+Fixed-template mode can also use the PPLX scorer above, without a generator.
+For authenticated Qorrect serving, set `generator.tokenEnv` to the name of an
+existing token environment variable; never put the token itself in the JSON file.
+
+The file overrides `reranking` in `PI_SEARCH_EXTENSION_CONFIG` without replacing
+the backend configuration. Use `{"mode":"off"}` to disable reranking explicitly.
+Enabled reranking requires `pyserini-rest-2tool`; three-tool runs are rejected.
+`--dry-run` validates the file but does not contact model services. Start services
+separately using [the reranker launchers](../scripts/rerankers/README.md).
+
+Each search retrieves `max(candidateK, hits)` candidates, deduplicates them, reads
+and scores their first 4000 JavaScript characters, and returns at most `hits`
+results. Read or scoring errors fail that search without a BM25 fallback.
+The run's `run_setup.json` records the configured reranking block (omitted optional
+values are not expanded into defaults). Shared/sharded CLI support for this flag
+is not yet available; those modes can still use `PI_SEARCH_EXTENSION_CONFIG`.
+
 ### Shared BM25 mode
 
 Shared mode starts one BM25 daemon and runs the selected query set against it:

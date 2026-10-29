@@ -1,9 +1,22 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { mergeShardOutputs } from "../src/orchestration/query_set_sharded_shared_bm25";
+import {
+  mergeShardOutputs,
+  readShardRerankingConfig,
+} from "../src/orchestration/query_set_sharded_shared_bm25";
+
+const reranking = {
+  mode: "fixed-template",
+  candidateK: 50,
+  scorer: {
+    provider: "pplx-decider",
+    baseUrl: "http://localhost:8002/v1",
+    model: "pplx-decider-flash-v1.2",
+  },
+};
 
 void test("mergeShardOutputs synthesizes merged metadata instead of failing on shard-local metadata conflicts", () => {
   const root = mkdtempSync(join(tmpdir(), "sharded-merge-"));
@@ -42,7 +55,7 @@ void test("mergeShardOutputs synthesizes merged metadata instead of failing on s
   writeFileSync(
     join(shardOutputRoot, "shard_01", "run_setup.json"),
     JSON.stringify(
-      { queryFile: join(root, "shard-queries", "shard_01.tsv"), totalQueries: "1" },
+      { queryFile: join(root, "shard-queries", "shard_01.tsv"), totalQueries: "1", reranking },
       null,
       2,
     ) + "\n",
@@ -51,7 +64,7 @@ void test("mergeShardOutputs synthesizes merged metadata instead of failing on s
   writeFileSync(
     join(shardOutputRoot, "shard_02", "run_setup.json"),
     JSON.stringify(
-      { queryFile: join(root, "shard-queries", "shard_02.tsv"), totalQueries: "1" },
+      { queryFile: join(root, "shard-queries", "shard_02.tsv"), totalQueries: "1", reranking },
       null,
       2,
     ) + "\n",
@@ -112,10 +125,12 @@ void test("mergeShardOutputs synthesizes merged metadata instead of failing on s
     queryFile: string;
     totalQueries: string;
     slice: string;
+    reranking: unknown;
   };
   assert.equal(runSetup.queryFile, queryPath);
   assert.equal(runSetup.totalQueries, "2");
   assert.equal(runSetup.slice, "dev");
+  assert.deepEqual(runSetup.reranking, reranking);
 
   const manifest = JSON.parse(
     readFileSync(join(mergedOutputDir, "benchmark_manifest_snapshot.json"), "utf8"),
@@ -127,6 +142,62 @@ void test("mergeShardOutputs synthesizes merged metadata instead of failing on s
   assert.equal(manifest.benchmark_id, "benchmark-template");
   assert.equal(manifest.query_set_id, "dev");
   assert.equal(manifest.query_path, queryPath);
+});
+
+void test("shard reranking metadata handles legacy and explicit off configs", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "sharded-rerank-off-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const name of ["legacy", "off", "missing"]) mkdirSync(join(root, name));
+  writeFileSync(join(root, "legacy", "run_setup.json"), "{}");
+  writeFileSync(
+    join(root, "off", "run_setup.json"),
+    JSON.stringify({ reranking: { mode: "off" } }),
+  );
+  assert.deepEqual(readShardRerankingConfig(root, ["legacy", "off", "missing"]), { mode: "off" });
+});
+
+void test("shard reranking equality ignores JSON key order", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "sharded-rerank-order-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const name of ["a", "b"]) mkdirSync(join(root, name));
+  writeFileSync(join(root, "a", "run_setup.json"), JSON.stringify({ reranking }));
+  writeFileSync(
+    join(root, "b", "run_setup.json"),
+    JSON.stringify({
+      reranking: {
+        scorer: reranking.scorer,
+        candidateK: 50,
+        mode: "fixed-template",
+      },
+    }),
+  );
+  assert.deepEqual(readShardRerankingConfig(root, ["a", "b"]), reranking);
+});
+
+void test("mismatched reranking configs fail before creating merged outputs", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "sharded-rerank-mismatch-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const name of ["a", "b"]) mkdirSync(join(root, name));
+  writeFileSync(join(root, "a", "run_setup.json"), JSON.stringify({ reranking }));
+  const mergedOutputDir = join(root, "merged");
+  for (const other of [{ mode: "off" }, { ...reranking, candidateK: 100 }]) {
+    writeFileSync(join(root, "b", "run_setup.json"), JSON.stringify({ reranking: other }));
+    const plan = { shardOutputRoot: root, mergedOutputDir } as Parameters<
+      typeof mergeShardOutputs
+    >[0];
+    assert.throws(() => mergeShardOutputs(plan, ["a", "b"], 2), /different reranking configs/);
+    assert.equal(existsSync(mergedOutputDir), false);
+  }
+});
+
+void test("malformed shard reranking metadata is rejected", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "sharded-rerank-invalid-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, "a"));
+  for (const setup of [null, [], { reranking: null }, { reranking: { mode: "unknown" } }]) {
+    writeFileSync(join(root, "a", "run_setup.json"), JSON.stringify(setup));
+    assert.throws(() => readShardRerankingConfig(root, ["a"]), /Invalid/);
+  }
 });
 
 void test("mergeShardOutputs writes merged ranked-list TREC run file", () => {

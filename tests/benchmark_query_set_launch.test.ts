@@ -1,11 +1,58 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative } from "node:path";
 
 import {
   buildBenchmarkQuerySetLaunchEnv,
   buildRunPiBenchmarkCommand,
   resolveBenchmarkQuerySetLaunchPlan,
 } from "../src/orchestration/benchmark_query_set_launch";
+
+void test("reranking config file is validated and forwarded using an absolute path", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "reranking-launch-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const path = join(root, "reranking.json");
+  const args = {
+    benchmarkId: "benchmark-template",
+    toolInterface: "pyserini-rest-2tool",
+    rerankingConfigPath: relative(process.cwd(), path),
+  };
+  const reranking = {
+    mode: "fixed-template",
+    candidateK: 50,
+    scorer: {
+      provider: "qwen-reranker",
+      baseUrl: "http://localhost:8003",
+      model: "qwen3-reranker",
+    },
+  };
+  writeFileSync(path, JSON.stringify(reranking));
+  const plan = resolveBenchmarkQuerySetLaunchPlan(args);
+  assert.equal(plan.rerankingConfigPath, path);
+  assert.deepEqual(buildRunPiBenchmarkCommand(plan).slice(-2), ["--reranking-config", path]);
+  assert.throws(
+    () => resolveBenchmarkQuerySetLaunchPlan({ ...args, toolInterface: "pi-serini-3tool" }),
+    /requires pyserini-rest-2tool/,
+  );
+  writeFileSync(path, '{"mode":"off"}');
+  assert.doesNotThrow(() =>
+    resolveBenchmarkQuerySetLaunchPlan({ ...args, toolInterface: "pi-serini-3tool" }),
+  );
+  writeFileSync(path, '{"mode":"invalid"}');
+  assert.throws(() => resolveBenchmarkQuerySetLaunchPlan(args), /Invalid reranking config/);
+  writeFileSync(path, "{");
+  assert.throws(() => resolveBenchmarkQuerySetLaunchPlan(args), /Failed to parse reranking config/);
+  assert.throws(
+    () =>
+      resolveBenchmarkQuerySetLaunchPlan({
+        ...args,
+        rerankingConfigPath: join(root, "missing.json"),
+      }),
+    /ENOENT/,
+  );
+});
 
 void test("benchmark query-set launch env builds hosted Pyserini REST config from shorthand env", () => {
   const plan = resolveBenchmarkQuerySetLaunchPlan({

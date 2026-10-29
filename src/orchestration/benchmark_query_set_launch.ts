@@ -1,10 +1,15 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   getBenchmarkDefinition,
   getDefaultBenchmarkId,
   resolveBenchmarkConfig,
 } from "../benchmarks/registry";
 import { DEFAULT_RANKED_LIST_DEPTH } from "../evaluation/ranked_list_output";
-import { buildPyseriniRestExtensionConfig } from "../pi-search/config";
+import {
+  buildPyseriniRestExtensionConfig,
+  parsePiSearchRerankingConfig,
+} from "../pi-search/config";
 import {
   formatPiSearchOutputModes,
   hasPiSearchOutputMode,
@@ -34,6 +39,7 @@ export type BenchmarkQuerySetLaunchArgs = {
   suppliedDocBundlePath?: string;
   outputMode?: string;
   toolInterface?: string;
+  rerankingConfigPath?: string;
   rankedListDepth?: number;
   rankedListCount?: number;
 };
@@ -55,6 +61,7 @@ export type BenchmarkQuerySetLaunchPlan = {
   outputMode: string;
   outputModes: PiSearchOutputModes;
   toolInterface: PiSearchToolInterface;
+  rerankingConfigPath?: string;
   rankedListDepth: number;
   rankedListCount?: number;
 };
@@ -164,6 +171,16 @@ export function resolveBenchmarkQuerySetLaunchPlan(
     args.toolInterface ?? readEnv("PI_SEARCH_TOOL_INTERFACE") ?? DEFAULT_PI_SEARCH_TOOL_INTERFACE,
   );
 
+  const rerankingConfigPath = args.rerankingConfigPath
+    ? resolve(args.rerankingConfigPath)
+    : undefined;
+  if (rerankingConfigPath) {
+    const reranking = parsePiSearchRerankingConfig(readFileSync(rerankingConfigPath, "utf8"));
+    if (reranking.mode !== "off" && toolInterface !== "pyserini-rest-2tool") {
+      throw new Error("Reranking requires pyserini-rest-2tool.");
+    }
+  }
+
   return {
     benchmarkId: benchmark.id,
     querySetId: config.querySetId,
@@ -188,6 +205,7 @@ export function resolveBenchmarkQuerySetLaunchPlan(
     outputMode: formatPiSearchOutputModes(outputModes),
     outputModes,
     toolInterface,
+    rerankingConfigPath,
     rankedListDepth,
     rankedListCount,
   };
@@ -254,6 +272,9 @@ export function buildRunPiBenchmarkCommand(plan: BenchmarkQuerySetLaunchPlan): s
   if (plan.suppliedDocBundlePath) {
     command.push("--supplied-doc-bundle", plan.suppliedDocBundlePath);
   }
+  if (plan.rerankingConfigPath) {
+    command.push("--reranking-config", plan.rerankingConfigPath);
+  }
   return command;
 }
 
@@ -263,6 +284,7 @@ export function printBenchmarkQuerySetLaunchPlan(plan: BenchmarkQuerySetLaunchPl
   console.log(`PROMPT_VARIANT=${plan.piSearchPromptVariant}`);
   console.log(`OUTPUT_MODE=${plan.outputMode}`);
   console.log(`PI_SEARCH_TOOL_INTERFACE=${plan.toolInterface}`);
+  if (plan.rerankingConfigPath) console.log(`RERANKING_CONFIG=${plan.rerankingConfigPath}`);
   if (hasPiSearchOutputMode(plan.outputModes, "ranked_list")) {
     console.log(`RANKED_LIST_DEPTH=${plan.rankedListDepth}`);
     if (plan.rankedListCount) {
