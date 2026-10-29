@@ -27,6 +27,7 @@ type Args = {
   indexPath?: string;
   outputMode?: string;
   toolInterface?: string;
+  rerankingConfigPath?: string;
   rankedListDepth?: number;
   rankedListCount?: number;
   dryRun: boolean;
@@ -107,6 +108,11 @@ function parseArgs(argv: string[]): Args {
         args.toolInterface = next;
         index += 1;
         break;
+      case "--reranking-config":
+        if (!next || next.startsWith("--")) throw new Error(`${arg} requires a value`);
+        args.rerankingConfigPath = next;
+        index += 1;
+        break;
       case "--rankedListDepth":
       case "--ranked-list-depth":
         if (!next) throw new Error(`${arg} requires a value`);
@@ -159,6 +165,7 @@ Options:
   --index-path <path>            Explicit override; wins over benchmark defaults
   --output-mode <answer|ranked_list|answer+ranked_list>
   --tool-interface <pyserini-rest-2tool|pi-serini-3tool>
+  --reranking-config <path>     JSON reranking config; overrides backend reranking
   --ranked-list-depth <n>        Max requested ranked-list length (default: 1000)
   --ranked-list-count <n>        Require exactly this many ranked docids
   --dry-run
@@ -175,6 +182,7 @@ function resolveSharedLaunchPlan(args: Args): SharedLaunchPlan {
     indexPath: args.indexPath,
     outputMode: args.outputMode,
     toolInterface: args.toolInterface,
+    rerankingConfigPath: args.rerankingConfigPath,
     rankedListDepth: args.rankedListDepth,
     rankedListCount: args.rankedListCount,
   });
@@ -214,6 +222,7 @@ function printSharedLaunchPlan(plan: SharedLaunchPlan): void {
   console.log(`PORT=${plan.port}`);
   console.log(`BM25_THREADS=${process.env.PI_BM25_THREADS?.trim() || "1"}`);
   console.log(`RUN_ENTRYPOINT=src/orchestration/query_set.ts`);
+  console.log(`COMMAND_JSON=${JSON.stringify(buildSharedBenchmarkCommand(plan))}`);
 }
 
 async function isTcpPortListening(host: string, port: number): Promise<boolean> {
@@ -243,9 +252,16 @@ async function startBm25Server(plan: SharedLaunchPlan) {
   });
 }
 
+function buildSharedBenchmarkCommand(plan: SharedLaunchPlan): string[] {
+  return buildTsxCommand(
+    "src/orchestration/query_set.ts",
+    plan.rerankingConfigPath ? ["--reranking-config", plan.rerankingConfigPath] : [],
+  );
+}
+
 async function runBenchmark(plan: SharedLaunchPlan): Promise<void> {
   const runLog = createWriteStream(plan.runLogPath, { flags: "a" });
-  const command = buildTsxCommand("src/orchestration/query_set.ts");
+  const command = buildSharedBenchmarkCommand(plan);
   const child = spawnPipedCommand(
     command,
     {

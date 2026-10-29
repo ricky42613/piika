@@ -225,9 +225,9 @@ For authenticated endpoints, either put the token in `PYSERINI_API_TOKEN` or set
 
 For the full backend configuration details, see `docs/pyserini-rest-search-provider.md`.
 
-#### Per-search reranking (single mode)
+#### Per-search reranking
 
-Single mode accepts `--reranking-config <path>` with a JSON file containing only the
+Single, shared, and sharded modes accept `--reranking-config <path>` with a JSON file containing only the
 reranking configuration, for example:
 
 ```json
@@ -285,8 +285,10 @@ Each search retrieves `max(candidateK, hits)` candidates, deduplicates them, rea
 and scores their first 4000 JavaScript characters, and returns at most `hits`
 results. Read or scoring errors fail that search without a BM25 fallback.
 The run's `run_setup.json` records the configured reranking block (omitted optional
-values are not expanded into defaults). Shared/sharded CLI support for this flag
-is not yet available; those modes can still use `PI_SEARCH_EXTENSION_CONFIG`.
+values are not expanded into defaults). Shared and sharded launchers forward the
+file to each runner. Sharded runs also preserve the setting in merged metadata
+and refuse to merge shards with different reranking configurations. Keep the file
+unchanged for the duration of a run, including retries.
 
 ### Shared BM25 mode
 

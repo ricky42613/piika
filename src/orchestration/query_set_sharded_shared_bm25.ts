@@ -51,6 +51,7 @@ type Args = {
   indexPath?: string;
   outputMode?: string;
   toolInterface?: string;
+  rerankingConfigPath?: string;
   rankedListDepth?: number;
   rankedListCount?: number;
   host?: string;
@@ -253,6 +254,11 @@ function parseArgs(argv: string[]): Args {
         args.toolInterface = next;
         index += 1;
         break;
+      case "--reranking-config":
+        if (!next || next.startsWith("--")) throw new Error(`${arg} requires a value`);
+        args.rerankingConfigPath = next;
+        index += 1;
+        break;
       case "--rankedListDepth":
       case "--ranked-list-depth":
         if (!next) throw new Error(`${arg} requires a value`);
@@ -355,6 +361,7 @@ Options:
   --index-path <path>            Explicit override; wins over benchmark defaults
   --output-mode <answer|ranked_list|answer+ranked_list>
   --tool-interface <pyserini-rest-2tool|pi-serini-3tool>
+  --reranking-config <path>     JSON reranking config; overrides backend reranking
   --ranked-list-depth <n>        Max requested ranked-list length (default: 1000)
   --ranked-list-count <n>        Require exactly this many ranked docids
   --host <host>
@@ -386,6 +393,7 @@ function resolveShardedLaunchPlan(args: Args): ShardedLaunchPlan {
     indexPath: args.indexPath,
     outputMode: args.outputMode,
     toolInterface: args.toolInterface,
+    rerankingConfigPath: args.rerankingConfigPath,
     rankedListDepth: args.rankedListDepth,
     rankedListCount: args.rankedListCount,
   });
@@ -476,6 +484,7 @@ function printShardedLaunchPlan(plan: ShardedLaunchPlan): void {
   console.log(`QUERY_FILE=${plan.queryPath}`);
   console.log(`QRELS_FILE=${plan.qrelsPath}`);
   console.log(`EXTENSION=${plan.extensionPath}`);
+  if (plan.rerankingConfigPath) console.log(`RERANKING_CONFIG=${plan.rerankingConfigPath}`);
   console.log(`OUTPUT_ROOT=${plan.outputRoot}`);
   console.log(`LOG_DIR=${plan.logDir}`);
   console.log(`INDEX_PATH=${plan.indexPath}`);
@@ -787,6 +796,9 @@ function spawnShard(plan: ShardedLaunchPlan, shard: ShardFile, attempt: number):
     plan.piSearchPromptVariant,
     "--output-mode",
     plan.outputMode,
+    "--tool-interface",
+    plan.toolInterface,
+    ...(plan.rerankingConfigPath ? ["--reranking-config", plan.rerankingConfigPath] : []),
     "--ranked-list-depth",
     String(plan.rankedListDepth),
     ...(plan.rankedListCount ? ["--ranked-list-count", String(plan.rankedListCount)] : []),
