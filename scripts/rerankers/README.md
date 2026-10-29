@@ -58,8 +58,12 @@ curl http://127.0.0.1:8003/score \
   -d '{"model":"qwen3-reranker","queries":"Who designed the analytical engine?","documents":["Charles Babbage designed the analytical engine."]}'
 ```
 
-The TypeScript scorer integration is not implemented yet. GPU serving still
-needs validation on the target host; launcher tests do not load model weights.
+The TypeScript client is `src/pi-search/reranking/qwen_reranker.ts`. It sends
+one `/score` request for all candidates, using the criterion question as the
+query and an explicit instruction to judge whether each document satisfies it.
+It requests activation and maps results by index, preserving candidate order.
+The client is not yet wired into the search pipeline. GPU serving still needs
+validation on the target host; launcher tests do not load model weights.
 
 ## Native Decider
 

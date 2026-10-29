@@ -30,7 +30,7 @@ void test("Qorrect client sends the training prompt with thinking disabled and p
       messages: [{ role: "user", content: buildQorrectPrompt(context) }],
       chat_template_kwargs: { enable_thinking: false },
       max_tokens: 64,
-      temperature: 1,
+      temperature: 0.3,
       stream: false,
       n: 1,
     });
