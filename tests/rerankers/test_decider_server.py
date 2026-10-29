@@ -2,8 +2,11 @@ import copy
 from concurrent.futures import ThreadPoolExecutor
 from http.client import HTTPConnection
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
 import threading
 import unittest
 
@@ -304,6 +307,45 @@ class ServerTests(unittest.TestCase):
             status, response = self.request("POST", "/v1/decisions", json.dumps(request_body()))
         self.assertEqual(status, 500)
         self.assertEqual(response, {"error": "Native Decider inference failed"})
+
+
+class LauncherTests(unittest.TestCase):
+    script = Path(__file__).resolve().parents[2] / "scripts" / "rerankers" / "decider_server.sh"
+
+    def test_help_works_from_another_directory_without_loading_sdk(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                ["bash", str(self.script), "--help"], cwd=directory,
+                env={**os.environ, "PIIKA_DECIDER_PYTHON": sys.executable},
+                capture_output=True, text=True, check=True,
+            )
+        self.assertIn("--max-batch-size", result.stdout)
+        self.assertIn("--served-model-name", result.stdout)
+
+    def test_preserves_arguments_working_directory_and_exit_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            python = Path(directory) / "fake python"
+            python.write_text('#!/bin/bash\nprintf "%s\\n" "$PWD" "$@"\nexit 7\n')
+            python.chmod(0o700)
+            arguments = ["--model", "models/my checkpoint", "--max-batch-size", "4"]
+            result = subprocess.run(
+                ["bash", str(self.script), *arguments], cwd=directory,
+                env={**os.environ, "PIIKA_DECIDER_PYTHON": str(python)},
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 7)
+            lines = result.stdout.splitlines()
+            self.assertEqual(Path(lines[0]).resolve(), Path(directory).resolve())
+            self.assertEqual(lines[1:], ["-u", "-B", str(self.script.with_suffix(".py")), *arguments])
+
+    def test_missing_model_returns_argument_error(self):
+        result = subprocess.run(
+            ["bash", str(self.script)],
+            env={**os.environ, "PIIKA_DECIDER_PYTHON": sys.executable},
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--model", result.stderr)
 
 
 if __name__ == "__main__":
