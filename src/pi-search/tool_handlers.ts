@@ -1,5 +1,6 @@
 import type { PiSearchBackendRuntime } from "./searcher/runtime";
-import { executeSearchPipeline } from "./search_pipeline";
+import { executeSearchPipeline, type SearchPipelineResponse } from "./search_pipeline";
+import type { SearchReranker } from "./reranking/factory";
 import { PiSearchInvalidToolArgumentsError, PiSearchToolExecutionError } from "./protocol/errors";
 import type {
   DirectReadDocumentParams,
@@ -36,13 +37,14 @@ const DIRECT_SEARCH_DEFAULT_LIMIT = 5;
 const DIRECT_SEARCH_MAX_LIMIT = 100;
 
 type SpillSequence = () => number;
-type ToolExecutionContext = { cwd: string };
+type ToolExecutionContext = { cwd: string; originalQuestion?: string };
 
 type ToolHandlerDeps = {
   backendRuntime: PiSearchBackendRuntime;
   searchStore: SearchSessionStore;
   spillDir: ManagedTempSpillDir;
   nextSpillSequence: SpillSequence;
+  reranker?: SearchReranker;
 };
 
 function formatReadDocumentText(parsed: {
@@ -77,21 +79,33 @@ function formatReadDocumentText(parsed: {
 function formatDirectSearchText(args: {
   rawQuery: string;
   limit: number;
-  hits: Array<{ docid: string; score?: number; title?: string | null; snippet?: string }>;
+  hits: SearchPipelineResponse["hits"];
+  reranked: boolean;
+  generatedQuestion?: string;
 }): string {
   if (args.hits.length === 0) {
     return [`No hits returned.`, `Plain query: ${JSON.stringify(args.rawQuery)}`].join("\n");
   }
 
   const lines = [
-    `Returned ${args.hits.length} hits from the Pyserini REST ranking.`,
+    args.reranked
+      ? `Returned ${args.hits.length} hits from the reranked search results.`
+      : `Returned ${args.hits.length} hits from the Pyserini REST ranking.`,
     `Plain query: ${JSON.stringify(args.rawQuery)}`,
     `Requested hits: ${args.limit}`,
     "",
   ];
+  if (args.generatedQuestion) {
+    lines.push("Rerank criterion: ", args.generatedQuestion, "");
+  }
   for (const [index, hit] of args.hits.entries()) {
-    const scoreText = typeof hit.score === "number" ? ` score=${hit.score.toFixed(4)}` : "";
-    lines.push(`${index + 1}. docid=${hit.docid}${scoreText}`);
+    const scoreText =
+      typeof hit.score === "number"
+        ? ` ${args.reranked ? "retrieval_score" : "score"}=${hit.score.toFixed(4)}`
+        : "";
+    const rerankText =
+      typeof hit.rerankScore === "number" ? ` rerank_score=${hit.rerankScore.toFixed(4)}` : "";
+    lines.push(`${index + 1}. docid=${hit.docid}${scoreText}${rerankText}`);
     if (hit.title) {
       lines.push(`   Title: ${hit.title}`);
     }
@@ -197,6 +211,10 @@ export async function executeDirectSearchTool(
     );
   }
   const limit = normalizeDirectSearchLimit(params.hits);
+  const reranking = deps.reranker?.buildSearchOptions({
+    originalQuestion: ctx.originalQuestion,
+    searchReason: params.reason,
+  });
   const response = await executeSearchPipeline(
     backend,
     {
@@ -204,18 +222,26 @@ export async function executeDirectSearchTool(
       limit,
     },
     signal,
+    reranking,
   );
 
   const renderedText = formatDirectSearchText({
     rawQuery,
     limit,
     hits: response.hits,
+    reranked: response.reranking !== undefined,
+    generatedQuestion:
+      reranking?.mode === "customized" ? response.reranking?.criterion?.question : undefined,
   });
   const rendered = truncateSearchOutput(
     deps.spillDir,
     `direct_search_${deps.nextSpillSequence()}.txt`,
     renderedText,
-    JSON.stringify({ rawQuery, limit, hits: response.hits }, null, 2),
+    JSON.stringify(
+      { rawQuery, limit, hits: response.hits, reranking: response.reranking },
+      null,
+      2,
+    ),
   );
   const docids = response.hits.map((hit) => hit.docid);
   return {
@@ -227,8 +253,9 @@ export async function executeDirectSearchTool(
       k: limit,
       returnedRankStart: response.hits.length > 0 ? 1 : 0,
       returnedRankEnd: response.hits.length,
-      retrievedDocids: docids,
+      retrievedDocids: response.reranking?.candidateDocids ?? docids,
       previewedDocids: docids,
+      ...(response.reranking ? { reranking: response.reranking } : {}),
       timingMs: {
         searchRpcMs: response.timingMs?.request,
         serverInitMs: response.timingMs?.backendInit,

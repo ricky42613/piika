@@ -216,6 +216,151 @@ void test("direct search returns visible docids without creating a search_id bro
   cleanup();
 });
 
+void test("direct search reranks and distinguishes retrieved candidates from visible hits", async () => {
+  const { deps, cleanup } = createRuntimeDeps();
+  const signal = new AbortController().signal;
+  try {
+    const result = await executeDirectSearchTool(
+      { reason: "Find the engine designer", query: "analytical engine ada", hits: 1 },
+      signal,
+      { cwd: ".", originalQuestion: "Who designed the analytical engine?" },
+      {
+        ...deps,
+        reranker: {
+          buildSearchOptions: (context) => {
+            assert.deepEqual(context, {
+              originalQuestion: "Who designed the analytical engine?",
+              searchReason: "Find the engine designer",
+            });
+            return {
+              mode: "fixed-template",
+              candidateK: 50,
+              scorer: {
+                score: async (_criterion, candidates, receivedSignal) => {
+                  assert.strictEqual(receivedSignal, signal);
+                  assert.equal(candidates.length, 2);
+                  assert.match(candidates[0].text, /Ada Lovelace wrote notes/);
+                  return candidates.map((candidate) => ({
+                    ...candidate,
+                    rerankScore: candidate.docid === "doc-2" ? 0.9 : 0.1,
+                  }));
+                },
+              },
+            };
+          },
+        },
+      },
+    );
+    assert.match(result.content[0].text, /Returned 1 hits from the reranked search results/);
+    assert.match(result.content[0].text, /1\. docid=doc-2/);
+    assert.match(result.content[0].text, /retrieval_score=/);
+    assert.match(result.content[0].text, /rerank_score=0\.9000/);
+    assert.doesNotMatch(result.content[0].text, /docid=doc-1/);
+    assert.deepEqual(result.details.retrievedDocids, ["doc-1", "doc-2"]);
+    assert.deepEqual(result.details.previewedDocids, ["doc-2"]);
+    assert.equal(result.details.k, 1);
+    assert.deepEqual(
+      result.details.reranking?.ranking.map((item) => item.docid),
+      ["doc-2", "doc-1"],
+    );
+    assert.ok(result.details.reranking?.criterion);
+    assert.doesNotMatch(result.content[0].text, /Rerank criterion/);
+  } finally {
+    cleanup();
+  }
+});
+
+void test("customized direct search shows the complete generated criterion before document results", async () => {
+  const { deps, cleanup } = createRuntimeDeps();
+  const question = "Does this document identify the designer\nof the analytical engine?";
+  try {
+    const result = await executeDirectSearchTool(
+      { reason: "Identify the designer", query: "analytical engine", hits: 1 },
+      undefined,
+      { cwd: ".", originalQuestion: "Who designed the analytical engine?" },
+      {
+        ...deps,
+        reranker: {
+          buildSearchOptions: (context) => ({
+            mode: "customized",
+            candidateK: 50,
+            originalQuestion: context!.originalQuestion!,
+            searchReason: context?.searchReason,
+            generator: { generateQuestion: async () => question },
+            scorer: {
+              score: async (criterion, candidates) => {
+                assert.equal(criterion.question, question);
+                return candidates.map((candidate) => ({ ...candidate, rerankScore: 0.5 }));
+              },
+            },
+          }),
+        },
+      },
+    );
+    const text = result.content[0].text;
+    const label = "Rerank criterion (generated; not evidence):";
+    assert.ok(text.includes(`${label}\n${question}\n`));
+    assert.ok(text.indexOf(label) < text.indexOf("1. docid="));
+    assert.equal(result.details.reranking?.criterion?.question, question);
+  } finally {
+    cleanup();
+  }
+});
+
+void test("direct search propagates rerank failure rather than showing the original ranking", async () => {
+  const { deps, cleanup } = createRuntimeDeps();
+  const error = new Error("reranker unavailable");
+  try {
+    await assert.rejects(
+      executeDirectSearchTool(
+        { reason: "Find evidence", query: "analytical engine", hits: 1 },
+        undefined,
+        { cwd: "." },
+        {
+          ...deps,
+          reranker: {
+            buildSearchOptions: () => ({
+              mode: "fixed-template",
+              candidateK: 50,
+              scorer: {
+                score: async () => {
+                  throw error;
+                },
+              },
+            }),
+          },
+        },
+      ),
+      (actual) => actual === error,
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+void test("cached 3-tool search does not invoke the direct-search reranker", async () => {
+  const { deps, cleanup } = createRuntimeDeps();
+  try {
+    const result = await executeSearchTool(
+      { reason: "Find evidence", query: "analytical engine" },
+      undefined,
+      { cwd: "." },
+      {
+        ...deps,
+        reranker: {
+          buildSearchOptions: () => {
+            throw new Error("must not rerank 3-tool search");
+          },
+        },
+      },
+    );
+    assert.ok(result.details.searchId);
+    assert.deepEqual(result.details.retrievedDocids, ["doc-1", "doc-2"]);
+  } finally {
+    cleanup();
+  }
+});
+
 void test("direct read_document returns a full document without continuation guidance", async () => {
   const { deps, cleanup } = createRuntimeDeps();
 
