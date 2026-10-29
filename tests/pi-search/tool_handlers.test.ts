@@ -298,7 +298,7 @@ void test("customized direct search shows the complete generated criterion befor
       },
     );
     const text = result.content[0].text;
-    const label = "Rerank criterion (generated; not evidence):";
+    const label = "Rerank criterion: ";
     assert.ok(text.includes(`${label}\n${question}\n`));
     assert.ok(text.indexOf(label) < text.indexOf("1. docid="));
     assert.equal(result.details.reranking?.criterion?.question, question);

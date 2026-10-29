@@ -16,6 +16,7 @@ import {
   ReadSearchResultsParamsSchema,
 } from "./protocol/schemas";
 import { SearchSessionStore } from "./search_cache";
+import { createSearchReranker } from "./reranking/factory";
 import {
   PiSearchBackendRuntime,
   type PiSearchBackendFactory,
@@ -40,6 +41,8 @@ export type PiSearchExtensionOptions = {
   buildCacheKey?: PiSearchBackendRuntimeOptions["buildCacheKey"];
   spillDirPrefix?: string;
   toolInterface?: PiSearchToolInterface;
+  originalQuestion?: string;
+  rerankingFetch?: typeof fetch;
 };
 
 function resolveToolInterface(options: PiSearchExtensionOptions): PiSearchToolInterface {
@@ -52,6 +55,16 @@ export function registerPiSearchExtension(
 ): void {
   const extensionConfig =
     options.resolveConfig?.(process.env) ?? resolvePiSearchExtensionConfigFromEnv(process.env);
+  const toolInterface = resolveToolInterface(options);
+  const reranker = createSearchReranker(extensionConfig.reranking, toolInterface, {
+    fetchImpl: options.rerankingFetch,
+  });
+  const originalQuestion = options.originalQuestion ?? process.env.PI_SEARCH_ORIGINAL_QUESTION;
+  if (extensionConfig.reranking?.mode === "customized" && !originalQuestion?.trim()) {
+    throw new Error(
+      "Customized reranking requires PI_SEARCH_ORIGINAL_QUESTION or an explicit originalQuestion.",
+    );
+  }
   const searchStore = new SearchSessionStore();
   const backendRuntime =
     options.backendRuntime ??
@@ -60,7 +73,6 @@ export function registerPiSearchExtension(
       createBackend: options.createBackend,
     });
   const spillDir = new ManagedTempSpillDir(options.spillDirPrefix ?? "pi-search-extension-");
-  const toolInterface = resolveToolInterface(options);
   const submitNowDelayMs = getSubmitNowDelayMs();
   let spillSequence = 0;
   let submitNowTimer: ReturnType<typeof setTimeout> | null = null;
@@ -91,6 +103,7 @@ export function registerPiSearchExtension(
     searchStore,
     spillDir,
     nextSpillSequence,
+    reranker,
   };
   const pyseriniRestPaginatedRead =
     toolInterface === "pyserini-rest-2tool" &&
@@ -205,7 +218,7 @@ export function registerPiSearchExtension(
       toolInterface === "pyserini-rest-2tool" ? DirectSearchParamsSchema : PlainSearchParamsSchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       return toolInterface === "pyserini-rest-2tool"
-        ? executeDirectSearchTool(params, signal, ctx, toolDeps)
+        ? executeDirectSearchTool(params, signal, { cwd: ctx.cwd, originalQuestion }, toolDeps)
         : executeSearchTool(params, signal, ctx, toolDeps);
     },
   });

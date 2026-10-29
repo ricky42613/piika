@@ -21,6 +21,7 @@ void test("run_pi_benchmark collects retrieved docids from pi-search structured 
       "printf '%s\\n' '{\"type\":\"session\"}'",
       'printf \'%s\\n\' \'{"type":"tool_execution_start","toolCallId":"1","toolName":"search","args":{"reason":"initial search","query":"alpha query"}}\'',
       'printf \'%s\\n\' \'{"type":"tool_execution_end","toolCallId":"1","toolName":"search","result":{"content":[{"type":"text","text":"Showing ranks 1-2 of 2 cached hits for search_id=s1\\nPlain query: \\\"alpha query\\\"\\n\\n1. docid=d1\\n2. docid=d2"}],"details":{"retrievedDocids":["d1","d2"]}}}\'',
+      'test "$PI_SEARCH_ORIGINAL_QUESTION" = "alpha query" || exit 42',
       'printf \'%s\\n\' \'{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Explanation: used structured details. Exact Answer: alpha. Confidence: 50%"}]}}\'',
       "printf '%s\\n' '{\"type\":\"agent_end\"}'",
     ].join("\n"),
