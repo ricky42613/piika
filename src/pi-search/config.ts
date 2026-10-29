@@ -85,6 +85,60 @@ const PiSearchMockBackendConfigSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const RerankerEndpointFields = {
+  baseUrl: Type.String({ pattern: "^https?://", minLength: 1 }),
+  model: Type.String({ pattern: "\\S", minLength: 1 }),
+  timeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 2_147_483_647 })),
+};
+
+const PplxDeciderScorerConfigSchema = Type.Object(
+  {
+    provider: Type.Literal("pplx-decider"),
+    ...RerankerEndpointFields,
+    concurrency: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
+  },
+  { additionalProperties: false },
+);
+
+const QwenRerankerScorerConfigSchema = Type.Object(
+  { provider: Type.Literal("qwen-reranker"), ...RerankerEndpointFields },
+  { additionalProperties: false },
+);
+
+const QorrectGeneratorConfigSchema = Type.Object(
+  {
+    provider: Type.Literal("qorrect"),
+    ...RerankerEndpointFields,
+    tokenEnv: Type.Optional(Type.String({ pattern: "\\S", minLength: 1 })),
+    maxTokens: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
+    temperature: Type.Optional(Type.Number({ minimum: 0, maximum: 2 })),
+  },
+  { additionalProperties: false },
+);
+
+export const PiSearchRerankingConfigSchema = Type.Union([
+  Type.Object({ mode: Type.Literal("off") }, { additionalProperties: false }),
+  Type.Object(
+    {
+      mode: Type.Literal("fixed-template"),
+      candidateK: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+      scorer: Type.Union([QwenRerankerScorerConfigSchema, PplxDeciderScorerConfigSchema]),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      mode: Type.Literal("customized"),
+      candidateK: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+      generator: QorrectGeneratorConfigSchema,
+      scorer: PplxDeciderScorerConfigSchema,
+    },
+    { additionalProperties: false },
+  ),
+]);
+
+export type PiSearchRerankingConfig = Static<typeof PiSearchRerankingConfigSchema>;
+
 export const PiSearchExtensionConfigSchema = Type.Object(
   {
     backend: Type.Union([
@@ -94,6 +148,7 @@ export const PiSearchExtensionConfigSchema = Type.Object(
       PiSearchPyseriniRestBackendConfigSchema,
       PiSearchMockBackendConfigSchema,
     ]),
+    reranking: Type.Optional(PiSearchRerankingConfigSchema),
   },
   { additionalProperties: false },
 );

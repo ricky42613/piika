@@ -1,9 +1,7 @@
 import type { RerankCandidate } from "./types";
 
 /** Run before scoring. Keep the first occurrence of each docid in retrieval order. */
-export function deduplicateCandidates(
-  candidates: readonly RerankCandidate[],
-): RerankCandidate[] {
+export function deduplicateCandidates<T extends { docid: string }>(candidates: readonly T[]): T[] {
   const seen = new Set<string>();
   return candidates.filter(({ docid }) => {
     if (seen.has(docid)) return false;
@@ -55,7 +53,6 @@ export function rankCandidates(
   // Scorer output may be reordered; resolve ties using original retrieval order.
   return ranked.sort(
     (a, b) =>
-      b.rerankScore - a.rerankScore ||
-      originalRank.get(a.docid)! - originalRank.get(b.docid)!,
+      b.rerankScore - a.rerankScore || originalRank.get(a.docid)! - originalRank.get(b.docid)!,
   );
 }
