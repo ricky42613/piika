@@ -4,7 +4,58 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { dumpPromptSnapshot } from "../../src/pi-search/prompt_policy";
+import { buildSubmitNowSteerMessage, dumpPromptSnapshot } from "../../src/pi-search/prompt_policy";
+
+void test("answer submission warning preserves answer fields only", () => {
+  const message = buildSubmitNowSteerMessage({});
+  assert.match(message, /Answer:\nExplanation:/);
+  assert.match(message, /Exact Answer:/);
+  assert.match(message, /Confidence:/);
+  assert.doesNotMatch(message, /Ranked List:/);
+});
+
+void test("ranking submission warning preserves depth without requesting answer fields", () => {
+  const message = buildSubmitNowSteerMessage({
+    OUTPUT_MODE: "ranked_list",
+    RANKED_LIST_DEPTH: "17",
+  });
+  assert.match(message, /up to 17 unique document ids/);
+  assert.match(message, /Ranked List:\n1\. \{docid\}/);
+  assert.doesNotMatch(message, /Explanation:|Exact Answer:|Confidence:|Answer:/);
+  assert.match(buildSubmitNowSteerMessage({ OUTPUT_MODE: "ranked_list" }), /up to 1000/);
+});
+
+void test("combined submission warning preserves section order and exact count without resuming retrieval", () => {
+  const message = buildSubmitNowSteerMessage({
+    OUTPUT_MODE: "ranked_list+answer",
+    RANKED_LIST_DEPTH: "20",
+    RANKED_LIST_COUNT: "7",
+  });
+  assert.ok(message.indexOf("Answer:") < message.indexOf("Ranked List:"));
+  assert.match(message, /exactly 7 unique document ids \(maximum depth 20\)/);
+  assert.match(message, /do not invent docids or resume retrieval/);
+  assert.match(message, /Stop using tools immediately/);
+  assert.doesNotMatch(message, /Continue searching/);
+});
+
+void test("submission warning rejects invalid modes and ranking limits", () => {
+  assert.throws(
+    () => buildSubmitNowSteerMessage({ OUTPUT_MODE: "invalid" }),
+    /Invalid output mode/,
+  );
+  for (const limits of [
+    { RANKED_LIST_DEPTH: "0" },
+    { RANKED_LIST_DEPTH: "1.5" },
+    { RANKED_LIST_COUNT: "-1" },
+    { RANKED_LIST_COUNT: "oops" },
+    { RANKED_LIST_DEPTH: "5", RANKED_LIST_COUNT: "6" },
+  ]) {
+    assert.throws(
+      () => buildSubmitNowSteerMessage({ OUTPUT_MODE: "ranked_list", ...limits }),
+      /Invalid ranked-list submission limits/,
+    );
+  }
+});
 
 function withEnv(overrides: Record<string, string | undefined>, fn: () => void): void {
   const previous = new Map<string, string | undefined>();

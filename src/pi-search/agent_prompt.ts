@@ -1,11 +1,11 @@
 import { DEFAULT_PI_SEARCH_TOOL_INTERFACE, type PiSearchToolInterface } from "./tool_interface";
 
-const ANSWER_RESPONSE_FORMAT = `Answer:
+export const ANSWER_RESPONSE_FORMAT = `Answer:
 Explanation: {your explanation for your final answer. Cite supporting docids inline in square brackets [] at the end of sentences when possible, for example [123].}
 Exact Answer: {your succinct, final answer}
 Confidence: {your confidence score between 0% and 100%}`;
 
-const RANKED_LIST_RESPONSE_FORMAT = `Ranked List:
+export const RANKED_LIST_RESPONSE_FORMAT = `Ranked List:
 1. {docid}
 2. {docid}
 3. {docid}`;

@@ -5,7 +5,7 @@ import {
   dumpPromptSnapshot,
   getSubmitNowDelayMs,
   stripBenchmarkIrrelevantSystemPromptSections,
-  SUBMIT_NOW_STEER_MESSAGE,
+  buildSubmitNowSteerMessage,
   SUBMIT_NOW_TRIGGER_RATIO,
 } from "./prompt_policy";
 import {
@@ -56,6 +56,7 @@ export function registerPiSearchExtension(
   const extensionConfig =
     options.resolveConfig?.(process.env) ?? resolvePiSearchExtensionConfigFromEnv(process.env);
   const toolInterface = resolveToolInterface(options);
+  const submitNowSteerMessage = buildSubmitNowSteerMessage();
   const reranker = createSearchReranker(extensionConfig.reranking, toolInterface, {
     fetchImpl: options.rerankingFetch,
   });
@@ -146,7 +147,7 @@ export function registerPiSearchExtension(
         console.error(
           `[pi-search] Time budget threshold reached at ${(submitNowDelayMs / 1000).toFixed(1)}s (${Math.round(SUBMIT_NOW_TRIGGER_RATIO * 100)}% of TIMEOUT_SECONDS=${BENCHMARK_TIMEOUT_SECONDS}); queueing submit-now steer and blocking further retrieval tools.`,
         );
-        pi.sendUserMessage(SUBMIT_NOW_STEER_MESSAGE, { deliverAs: "steer" });
+        pi.sendUserMessage(submitNowSteerMessage, { deliverAs: "steer" });
       } catch (error) {
         console.error(
           `[pi-search] Failed to queue submit-now steer: ${error instanceof Error ? error.message : String(error)}`,
@@ -166,12 +167,11 @@ export function registerPiSearchExtension(
       event.toolName === "read_document"
     ) {
       console.error(
-        `[pi-search] Blocking ${event.toolName} after timeout steer; model must submit final answer now.`,
+        `[pi-search] Blocking ${event.toolName} after timeout steer; model must submit final response now.`,
       );
       return {
         block: true,
-        reason:
-          "Time budget is nearly exhausted. Do not use more retrieval tools; submit your final answer right now.",
+        reason: submitNowSteerMessage,
       };
     }
   });
