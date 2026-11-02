@@ -11,6 +11,7 @@ import {
 import {
   DirectReadDocumentParamsSchema,
   DirectSearchParamsSchema,
+  CitedDirectSearchParamsSchema,
   PlainSearchParamsSchema,
   ReadDocumentParamsSchema,
   ReadSearchResultsParamsSchema,
@@ -57,6 +58,10 @@ export function registerPiSearchExtension(
     options.resolveConfig?.(process.env) ?? resolvePiSearchExtensionConfigFromEnv(process.env);
   const toolInterface = resolveToolInterface(options);
   const submitNowSteerMessage = buildSubmitNowSteerMessage();
+  const citeQueries = extensionConfig.searchQueryProvenance === "cite-docids";
+  if (citeQueries && toolInterface !== "pyserini-rest-2tool") {
+    throw new Error("searchQueryProvenance=cite-docids requires pyserini-rest-2tool.");
+  }
   const reranker = createSearchReranker(extensionConfig.reranking, toolInterface, {
     fetchImpl: options.rerankingFetch,
   });
@@ -105,6 +110,7 @@ export function registerPiSearchExtension(
     spillDir,
     nextSpillSequence,
     reranker,
+    citeQueries,
   };
   const pyseriniRestPaginatedRead =
     toolInterface === "pyserini-rest-2tool" &&
@@ -202,6 +208,11 @@ export function registerPiSearchExtension(
       toolInterface === "pyserini-rest-2tool"
         ? [
             "Always provide reason first. Keep it specific and under 100 words.",
+            ...(citeQueries
+              ? [
+                  "Use cite as a list of docids from documents, titles, or snippets already shown to you that informed this query. Use [] if there are no document sources.",
+                ]
+              : []),
             "Use query as a short raw lexical query string, not a structured object and not raw Lucene syntax.",
             "The search result itself is the visible ranked list; there is no search_id or result-page browsing tool in this condition.",
             "Keep hits small by default. Increase hits only when the visible ranking is too shallow for the question.",
@@ -215,7 +226,11 @@ export function registerPiSearchExtension(
             "After browsing a ranking that surfaces plausible candidates, inspect one with read_document(docid).",
           ],
     parameters:
-      toolInterface === "pyserini-rest-2tool" ? DirectSearchParamsSchema : PlainSearchParamsSchema,
+      toolInterface === "pyserini-rest-2tool"
+        ? citeQueries
+          ? CitedDirectSearchParamsSchema
+          : DirectSearchParamsSchema
+        : PlainSearchParamsSchema,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       return toolInterface === "pyserini-rest-2tool"
         ? executeDirectSearchTool(params, signal, { cwd: ctx.cwd, originalQuestion }, toolDeps)

@@ -225,6 +225,27 @@ For authenticated endpoints, either put the token in `PYSERINI_API_TOKEN` or set
 
 For the full backend configuration details, see `docs/pyserini-rest-search-provider.md`.
 
+#### Optional query provenance
+
+Add `"searchQueryProvenance": "cite-docids"` at the top level of
+`PI_SEARCH_EXTENSION_CONFIG` (alongside `backend`) to expose a required `cite`
+array on the two-tool interface's `search`. The argument order is
+`reason → cite → query → hits`:
+
+```json
+{"reason":"Use the old place name mentioned in d12.","cite":["d12"],"query":"old place name railway","hits":5}
+```
+
+Use `[]` for queries without document sources. Titles and snippets already shown
+to the agent count as sources; internal reranker candidates and generated criteria
+do not. Citations describe query provenance, not final-answer evidence. The tool
+checks the array format and records unique docids in tool details/spill metadata;
+it does not yet verify whether the cited documents were actually shown to the agent.
+
+Omitting the setting or using `"off"` keeps the original schema and instructions.
+Enabling this setting with `pi-serini-3tool` is rejected. This setting does not
+change retrieval or reranking, and has no separate CLI flag yet.
+
 #### Per-search reranking
 
 Single, shared, and sharded modes accept `--reranking-config <path>` with a JSON file containing only the

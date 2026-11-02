@@ -45,6 +45,7 @@ type ToolHandlerDeps = {
   spillDir: ManagedTempSpillDir;
   nextSpillSequence: SpillSequence;
   reranker?: SearchReranker;
+  citeQueries?: boolean;
 };
 
 function formatReadDocumentText(parsed: {
@@ -197,7 +198,7 @@ export async function executeSearchTool(
 }
 
 export async function executeDirectSearchTool(
-  params: DirectSearchParams,
+  params: DirectSearchParams & { cite?: string[] },
   signal: AbortSignal | undefined,
   ctx: ToolExecutionContext,
   deps: ToolHandlerDeps,
@@ -209,6 +210,19 @@ export async function executeDirectSearchTool(
       "search arguments",
       "query must be a non-empty string.",
     );
+  }
+  let provenance: { cite: string[] } | undefined;
+  if (deps.citeQueries) {
+    if (
+      !Array.isArray(params.cite) ||
+      params.cite.some((docid) => typeof docid !== "string" || !docid.trim())
+    ) {
+      throw new PiSearchInvalidToolArgumentsError(
+        "search arguments",
+        "cite must be an array of non-empty docids; use [] when there are no document sources.",
+      );
+    }
+    provenance = { cite: [...new Set(params.cite)] };
   }
   const limit = normalizeDirectSearchLimit(params.hits);
   const reranking = deps.reranker?.buildSearchOptions({
@@ -238,7 +252,7 @@ export async function executeDirectSearchTool(
     `direct_search_${deps.nextSpillSequence()}.txt`,
     renderedText,
     JSON.stringify(
-      { rawQuery, limit, hits: response.hits, reranking: response.reranking },
+      { rawQuery, limit, hits: response.hits, reranking: response.reranking, ...provenance },
       null,
       2,
     ),
@@ -248,6 +262,7 @@ export async function executeDirectSearchTool(
     content: [{ type: "text" as const, text: rendered.text }],
     details: {
       toolInterface: "pyserini-rest-2tool",
+      ...provenance,
       rawQuery,
       queryMode: SEARCH_QUERY_MODE,
       k: limit,

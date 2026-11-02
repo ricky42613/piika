@@ -149,6 +149,9 @@ export const PiSearchExtensionConfigSchema = Type.Object(
       PiSearchMockBackendConfigSchema,
     ]),
     reranking: Type.Optional(PiSearchRerankingConfigSchema),
+    searchQueryProvenance: Type.Optional(
+      Type.Union([Type.Literal("off"), Type.Literal("cite-docids")]),
+    ),
   },
   { additionalProperties: false },
 );

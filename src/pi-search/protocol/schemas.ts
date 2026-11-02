@@ -27,6 +27,16 @@ export const DirectSearchParamsSchema = Type.Object({
   ),
 });
 
+export const CitedDirectSearchParamsSchema = Type.Object({
+  reason: DirectSearchParamsSchema.properties.reason,
+  cite: Type.Array(Type.String({ minLength: 1 }), {
+    description:
+      "Docids of documents already shown to you whose content, title, or snippet informed this query. List only sources that influenced this query, not answer citations. Use [] when based only on the original question. Do not cite internal reranker candidates or generated criteria.",
+  }),
+  query: DirectSearchParamsSchema.properties.query,
+  hits: DirectSearchParamsSchema.properties.hits,
+});
+
 export const ReadSearchResultsParamsSchema = Type.Object({
   reason: Type.String({
     description:
