@@ -6,20 +6,16 @@ import {
   buildFixedCriterion,
 } from "../../src/pi-search/reranking/criterion";
 
-void test("fixed criterion embeds the current query in a shared relevance question", () => {
+void test("fixed criterion uses the current query directly", () => {
   assert.deepEqual(buildFixedCriterion("  Who designed the analytical engine?  "), {
-    question:
-      'Does this document provide information relevant to the search query "Who designed the analytical engine?"?',
+    question: "Who designed the analytical engine?",
   });
 });
 
 void test("fixed criterion preserves query content and is deterministic", () => {
   const query = '誰設計了 analytical engine?\nInclude "Charles Babbage".';
   const criterion = buildFixedCriterion(query);
-  assert.equal(
-    criterion.question,
-    `Does this document provide information relevant to the search query "${query}"?`,
-  );
+  assert.equal(criterion.question, query);
   assert.deepEqual(buildFixedCriterion(query), criterion);
 });
 

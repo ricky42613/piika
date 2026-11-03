@@ -3,6 +3,9 @@ import test from "node:test";
 
 import { createSearchReranker } from "../../src/pi-search/reranking/factory";
 import { buildCustomizedCriterion } from "../../src/pi-search/reranking/criterion";
+import { executeSearchPipeline } from "../../src/pi-search/search_pipeline";
+import { PiSearchBackendRuntime } from "../../src/pi-search/searcher/runtime";
+import { buildMockExtensionConfig } from "../../src/pi-search/config";
 
 const pplx = {
   provider: "pplx-decider" as const,
@@ -73,6 +76,52 @@ void test("factory selects the configured scorer and reuses its client", async (
       await first.scorer.score({ question: "Relevant?" }, [{ docid: "a", text: "A" }]),
       [{ docid: "a", text: "A", rerankScore: 0.8 }],
     );
+  }
+});
+
+void test("fixed mode sends the raw query to Qwen and Decider with provider-specific instructions", async () => {
+  const query = "engine";
+  for (const scorer of [qwen, pplx]) {
+    const expected = query;
+    let calls = 0;
+    const reranker = createSearchReranker(
+      { mode: "fixed-template", candidateK: 5, scorer },
+      "pyserini-rest-2tool",
+      {
+        fetchImpl: async (_url, init) => {
+          calls += 1;
+          const body = JSON.parse(String(init?.body));
+          if (scorer.provider === "qwen-reranker") {
+            assert.equal(body.queries, query);
+            return Response.json({ model: scorer.model, data: [{ index: 0, score: 0.8 }] });
+          }
+          assert.equal(
+            body.questions.relevance.instructions,
+            `Does the candidate document contain evidence that directly helps answer the search query? Use only the document.\n\nSearch query:\n${expected}`,
+          );
+          return Response.json({
+            model: scorer.model,
+            answers: { relevance: { type: "noul", noul: 0.8 } },
+          });
+        },
+      },
+    )!;
+    const backend = new PiSearchBackendRuntime(
+      buildMockExtensionConfig({ documents: [{ docid: "a", text: "engine" }] }),
+    );
+    try {
+      const response = await executeSearchPipeline(
+        backend.getBackend("."),
+        { query, limit: 1 },
+        undefined,
+        reranker.buildSearchOptions(),
+      );
+      assert.equal(calls, 1);
+      assert.equal(response.reranking?.criterion?.question, expected);
+      assert.equal(response.hits[0].rerankScore, 0.8);
+    } finally {
+      backend.dispose();
+    }
   }
 });
 

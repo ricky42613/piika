@@ -4,6 +4,9 @@ import { formatScoringDocument } from "./candidates";
 const PPLX_AFFIRMATIVE_INSTRUCTION =
   "Given a yes/no filter question, judge whether the document provides sufficient evidence to answer Yes to that question. A document that supports No, merely mentions the topic, or provides insufficient evidence does not meet the requirement. Use only the document.";
 
+const PPLX_FIXED_MODE_INSTRUCTION =
+  "Does the candidate document contain evidence that directly helps answer the search query? Use only the document.";
+
 export type PplxDeciderConfig = {
   /** API base including /v1, for example http://127.0.0.1:8002/v1. */
   baseUrl: string;
@@ -21,6 +24,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function createPplxDeciderScorer(
   config: PplxDeciderConfig,
   fetchImpl: typeof fetch = fetch,
+  mode: "fixed-template" | "customized" = "customized",
 ): RerankScorer {
   const endpoint = new URL(`${config.baseUrl.replace(/\/+$/, "")}/decisions`);
   if (!["http:", "https:"].includes(endpoint.protocol)) {
@@ -62,7 +66,10 @@ export function createPplxDeciderScorer(
               questions: {
                 relevance: {
                   type: "noul",
-                  instructions: `${PPLX_AFFIRMATIVE_INSTRUCTION}\n\nFilter question:\n${criterion.question}`,
+                  instructions:
+                    mode === "fixed-template"
+                      ? `${PPLX_FIXED_MODE_INSTRUCTION}\n\nSearch query:\n${criterion.question}`
+                      : `${PPLX_AFFIRMATIVE_INSTRUCTION}\n\nFilter question:\n${criterion.question}`,
                 },
               },
             }),

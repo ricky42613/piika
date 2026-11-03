@@ -29,7 +29,7 @@ export async function buildCustomizedCriterion(
   return { question };
 }
 
-/** Build the shared relevance question; provider-specific formatting belongs to the scorer. */
+/** Use the search query directly; provider-specific instructions belong to the scorer. */
 export function buildFixedCriterion(query: string): RerankCriterion {
   const currentQuery = query.trim();
   if (!currentQuery) {
@@ -37,6 +37,6 @@ export function buildFixedCriterion(query: string): RerankCriterion {
   }
 
   return {
-    question: `Does this document provide information relevant to the search query "${currentQuery}"?`,
+    question: currentQuery,
   };
 }

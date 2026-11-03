@@ -41,7 +41,7 @@ export function createQwenRerankerScorer(
           model: config.model,
           queries: criterion.question,
           documents: candidates.map(formatScoringDocument),
-          instruction: "Determine whether the document satisfies the requirement in the query.",
+          instruction: "Given a web search query, retrieve relevant passages that answer the query",
           use_activation: true,
         }),
         signal: signal ? AbortSignal.any([signal, timeout]) : timeout,

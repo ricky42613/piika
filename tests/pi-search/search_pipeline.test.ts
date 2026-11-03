@@ -100,10 +100,7 @@ void test("reranked search retrieves a larger pool, reads unique documents, and 
     scorer: {
       score: async (criterion, candidates, receivedSignal) => {
         assert.strictEqual(receivedSignal, signal);
-        assert.equal(
-          criterion.question,
-          'Does this document provide information relevant to the search query "engine"?',
-        );
+        assert.equal(criterion.question, "engine");
         assert.deepEqual(
           candidates.map((candidate) => candidate.text.length),
           [4000, 4000],

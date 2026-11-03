@@ -30,10 +30,7 @@ void test("fixed reranking deduplicates before scoring, preserves retrieval scor
       scorer: {
         score: async (criterion, received, receivedSignal) => {
           calls += 1;
-          assert.equal(
-            criterion.question,
-            'Does this document provide information relevant to the search query "analytical engine designer"?',
-          );
+          assert.equal(criterion.question, "analytical engine designer");
           assert.deepEqual(received, [first, second]);
           assert.strictEqual(received[0], first);
           assert.strictEqual(receivedSignal, signal);

@@ -28,7 +28,7 @@ export function createSearchReranker(
   const scorer =
     config.scorer.provider === "qwen-reranker"
       ? createQwenRerankerScorer(config.scorer, fetchImpl)
-      : createPplxDeciderScorer(config.scorer, fetchImpl);
+      : createPplxDeciderScorer(config.scorer, fetchImpl, config.mode);
 
   if (config.mode === "fixed-template") {
     return {

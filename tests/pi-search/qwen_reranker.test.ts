@@ -4,7 +4,7 @@ import test from "node:test";
 import { createQwenRerankerScorer } from "../../src/pi-search/reranking/qwen_reranker";
 
 const config = { baseUrl: "http://127.0.0.1:8003/", model: "qwen3-reranker" };
-const criterion = { question: "Does this document identify\nthe engine designer?" };
+const criterion = { question: "analytical engine designer" };
 const candidates = Object.freeze([
   Object.freeze({ docid: "a", title: "A", text: "First document", retrievalScore: 10 }),
   Object.freeze({ docid: "b", text: "Second\ndocument", retrievalScore: 8 }),
@@ -24,7 +24,7 @@ void test("Qwen batches all documents and maps out-of-order scores without mutat
       model: config.model,
       queries: criterion.question,
       documents: ["A\nFirst document", "Second\ndocument"],
-      instruction: "Determine whether the document satisfies the requirement in the query.",
+      instruction: "Given a web search query, retrieve relevant passages that answer the query",
       use_activation: true,
     });
     return result([

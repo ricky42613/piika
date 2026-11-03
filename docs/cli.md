@@ -293,6 +293,11 @@ For customized criteria, use Qorrect with PPLX Decider:
 ```
 
 Fixed-template mode can also use the PPLX scorer above, without a generator.
+Qwen receives the raw search query with the instruction `Given a web search query,
+retrieve relevant passages that answer the query`. PPLX also receives the raw
+search query, preceded by `Does the candidate document contain evidence that directly
+helps answer the search query? Use only the document.` Customized mode retains the
+Qorrect-generated Yes/No question and the affirmative-evidence instruction.
 For authenticated Qorrect serving, set `generator.tokenEnv` to the name of an
 existing token environment variable; never put the token itself in the JSON file.
 
