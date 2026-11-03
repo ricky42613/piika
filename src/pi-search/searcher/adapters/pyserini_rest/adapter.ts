@@ -47,6 +47,16 @@ function encodeIndexPath(index: string): string {
     .join("/");
 }
 
+function encodeDocumentId(docid: string): string {
+  // FastAPI decodes the path before routing, and Pyserini REST unquotes the
+  // matched docid again. Escape separators twice to keep them in one route
+  // segment, but escape literal percent signs three times: BRIGHT IDs such as
+  // Earth%27s must not be decoded into Earth's by the second unquote.
+  return encodeURIComponent(docid)
+    .replace(/%25/gi, "%2525")
+    .replace(/%2F/gi, "%252F");
+}
+
 function getAuthHeaders(config: PyseriniRestBackendConfig): Record<string, string> {
   const tokenEnv = config.tokenEnv?.trim();
   const token = tokenEnv ? process.env[tokenEnv]?.trim() : undefined;
@@ -187,9 +197,7 @@ export class PyseriniRestSearchBackend implements PiSearchBackend {
       );
     }
     const url = new URL(
-      `${this.baseUrl}/v1/${encodeIndexPath(this.config.index)}/doc/${encodeURIComponent(
-        request.docid,
-      )}`,
+      `${this.baseUrl}/v1/${encodeIndexPath(this.config.index)}/doc/${encodeDocumentId(request.docid)}`,
     );
 
     const parsed = (await this.fetchJson("readDocument", url, signal, {

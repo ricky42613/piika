@@ -1,5 +1,6 @@
-// Qorrect rollout-4 policy prompt and generation settings:
-// https://huggingface.co/ricky42613/qorrect-rollout4 (prompts.py, policy.py, README.md).
+// Qorrect question prompt matches reranq's full-output constrained training snapshot
+// (outputs/grpo-base-decider-qwenjudge-fulloutput-constrained-epoch1-20261027T204501Z/prompts.py).
+// The default model alias serves the full-output checkpoint; pin its root separately if needed.
 // This model generates questions only; document classification uses a separate predictor.
 export type FilterQuestionGenerator = (
   currentQuery: string,
@@ -25,7 +26,7 @@ export function buildFilterQuestionPrompt(
   const seenSection = enableSeenDocs && seenDocs.length
     ? `Previously seen documents:\n${seenDocs.join("\n\n")}\nTreat then as background background knowledge you already have.\n\n`
     : "";
-  // Match the rollout-4 prompts.py builder exactly, including its seen-docs wording.
+  // Match the reranq full-output prompts.py builder exactly, including its seen-docs wording.
   return `You are an agent performing multi-step search.
 
 Original question:
@@ -43,6 +44,8 @@ Choose the scope of the question based on the CURRENT search state and informati
 Rules:
 - Output only ONE complete yes/no question, with no answer, explanation, or labels.
 - The question must be answerable from ONE document.
+- The document scorer sees ONLY your generated question and the document, not the original question, search query, or search reason above. Make the generated question self-contained by stating the relevant topic, entity, or information need explicitly.
+- Do not use unresolved references such as "my question", "the user's question", or "the search query" unless you explicitly state the referenced information in the generated question. A broad but self-contained relevance question is allowed.
 - Do not mention document IDs or ranks.
 - Do not encode answers for individual documents.
 
@@ -59,10 +62,11 @@ export function createFilterQuestionGenerator(
   request: typeof fetch = fetch,
 ): FilterQuestionGenerator {
   // Generator settings never inherit the predictor endpoint/model/API key.
-  const baseUrl = (env.PI_SEARCH_FILTER_GENERATOR_BASE_URL?.trim() || "http://127.0.0.1:18080/v1")
+  const baseUrl = (env.PI_SEARCH_FILTER_GENERATOR_BASE_URL?.trim() || "http://127.0.0.1:18086/v1")
     .replace(/\/$/, "")
     .replace(/\/v1$/, "");
-  const model = env.PI_SEARCH_FILTER_GENERATOR_MODEL?.trim() || "ricky42613/qorrect-rollout4";
+  const model = env.PI_SEARCH_FILTER_GENERATOR_MODEL?.trim() || "qorrect-decider-fulloutput-checkpoint717";
+  const expectedModelRoot = env.PI_SEARCH_FILTER_GENERATOR_EXPECTED_MODEL_ROOT?.trim();
   const apiKey = env.PI_SEARCH_FILTER_GENERATOR_API_KEY;
   const originalQuestion = env.PI_SEARCH_ORIGINAL_QUESTION?.trim();
   const maxTokens = Number(env.PI_SEARCH_FILTER_GENERATOR_MAX_TOKENS?.trim() || "64");
@@ -80,6 +84,22 @@ export function createFilterQuestionGenerator(
     signal?.throwIfAborted();
     if (!currentQuery.trim()) throw new Error("Question generation requires a non-empty search query.");
     const timeout = AbortSignal.timeout(180_000);
+    const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+    // Opt-in identity pin: a served alias may be silently reassigned between searches.
+    if (expectedModelRoot) {
+      const modelsResponse = await request(`${baseUrl}/v1/models`, {
+        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+        signal: requestSignal,
+      });
+      if (!modelsResponse.ok)
+        throw new Error(`Qorrect model identity check HTTP ${modelsResponse.status}.`);
+      const models = (await modelsResponse.json()) as {
+        data?: Array<{ id?: unknown; root?: unknown }>;
+      };
+      const actualRoot = models.data?.find((entry) => entry.id === model)?.root;
+      if (actualRoot !== expectedModelRoot)
+        throw new Error(`Qorrect model identity changed: expected ${model} at ${expectedModelRoot}, got ${String(actualRoot)}.`);
+    }
     const prompt = qwenChatPrompt(buildFilterQuestionPrompt(
       originalQuestion, currentQuery, currentReason, seenDocs, includeSeenDocs,
     ));
@@ -97,7 +117,7 @@ export function createFilterQuestionGenerator(
         top_p: 1.0,
         top_k: 0,
       }),
-      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      signal: requestSignal,
     });
     if (!response.ok)
       throw new Error(

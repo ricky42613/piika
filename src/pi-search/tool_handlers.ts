@@ -27,10 +27,11 @@ import type {
   ToolTimingBreakdown,
 } from "./tool_types";
 
-import type { FilterPredictor, FilterQuestionSource } from "./filter_config";
+import type { FilterPredictor, FilterQuestionSource, SearchFilterAction } from "./filter_config";
 import type { PiSearchToolInterface } from "./tool_interface";
 import type { FilterQuestionGenerator } from "./filter_question";
 import { JEV_GENERAL_PROMPT, type DocumentFilter, type FilterScore } from "./yes_no_filter";
+import type { DocumentReranker } from "./reranker";
 
 const SEARCH_QUERY_MODE = "plain";
 const SEARCH_CACHE_K = 1000;
@@ -51,6 +52,8 @@ type ToolHandlerDeps = {
   spillDir: ManagedTempSpillDir;
   nextSpillSequence: SpillSequence;
   documentFilter?: DocumentFilter;
+  filterAction?: SearchFilterAction;
+  documentReranker?: DocumentReranker;
   questionSource?: FilterQuestionSource;
   predictor?: FilterPredictor;
   filterThreshold?: number;
@@ -94,13 +97,15 @@ function formatDirectSearchText(args: {
   rawQuery: string;
   limit: number;
   hits: Array<{ docid: string; score?: number; title?: string | null; snippet?: string }>;
+  reranked?: boolean;
+  rerankLabel?: string;
 }): string {
   if (args.hits.length === 0) {
     return [`No hits returned.`, `Plain query: ${JSON.stringify(args.rawQuery)}`].join("\n");
   }
 
   const lines = [
-    `Returned ${args.hits.length} hits from the Pyserini REST ranking.`,
+    `Returned ${args.hits.length} hits from the ${args.rerankLabel ?? (args.reranked ? "Qwen3 reranked" : "Pyserini REST")} ranking.`,
     `Plain query: ${JSON.stringify(args.rawQuery)}`,
     `Requested hits: ${args.limit}`,
     "",
@@ -283,7 +288,9 @@ export async function executeDirectSearchTool(
     );
   }
   const limit = normalizeDirectSearchLimit(params.hits);
-  const candidateLimit = deps.documentFilter ? normalizeRereankDepth(deps.rerankDepth) : limit;
+  if (deps.documentFilter && deps.documentReranker)
+    throw new Error("Search filtering and reranking cannot both be enabled.");
+  const candidateLimit = deps.documentFilter || deps.documentReranker ? normalizeRereankDepth(deps.rerankDepth) : limit;
   const response = await backend.search(
     {
       query: rawQuery,
@@ -293,9 +300,11 @@ export async function executeDirectSearchTool(
   );
 
   const filterScores: Array<FilterScore & { docid: string }> = [];
+  const rerankScores: Array<{ docid: string; bm25Score?: number; score: number }> = [];
   const hits = [] as typeof response.hits;
   for (const hit of response.hits) {
-    if (deps.documentFilter) {
+    let documentText: string | undefined;
+    if (deps.documentFilter || deps.documentReranker) {
       let offset = 1;
       const parts: string[] = [];
       while (true) {
@@ -307,7 +316,7 @@ export async function executeDirectSearchTool(
         if (!doc.found)
           throw new PiSearchToolExecutionError(
             "search",
-            `Filter document '${hit.docid}' not found.`,
+            `Search candidate document '${hit.docid}' not found.`,
           );
         if (offset === 1 && doc.title) parts.push(doc.title);
         parts.push(doc.text);
@@ -315,18 +324,40 @@ export async function executeDirectSearchTool(
         if (!doc.nextOffset || doc.nextOffset <= offset)
           throw new PiSearchToolExecutionError(
             "search",
-            "Filter document pagination did not advance.",
+            "Search candidate document pagination did not advance.",
           );
         offset = doc.nextOffset;
       }
-      const score = await deps.documentFilter(filterQuestion!, parts.join("\n"), signal);
+      documentText = parts.join("\n");
+    }
+    if (deps.documentFilter) {
+      const score = await deps.documentFilter(filterQuestion!, documentText!, signal);
       filterScores.push({ docid: hit.docid, ...score });
+      if (deps.filterAction === "rerank") {
+        const rankingScore = score.rerankScore ?? score.yesProbability;
+        rerankScores.push({ docid: hit.docid, bm25Score: hit.score, score: rankingScore });
+        hits.push({ ...hit, score: rankingScore });
+        continue;
+      }
       if (!score.keep) continue;
     }
-    hits.push(hit);
+    if (deps.documentReranker) {
+      const score = await deps.documentReranker(rawQuery, documentText!, signal);
+      rerankScores.push({ docid: hit.docid, bm25Score: hit.score, score });
+      hits.push({ ...hit, score });
+    } else hits.push(hit);
   }
-  const returnedHits = deps.documentFilter ? hits.slice(0, limit) : hits;
-  const filterDetails = deps.documentFilter
+  const rerankFromQuestion = !!deps.documentFilter && deps.filterAction === "rerank";
+  if (deps.documentReranker || rerankFromQuestion) hits.sort((a, b) => b.score! - a.score!);
+  const returnedHits = deps.documentFilter || deps.documentReranker ? hits.slice(0, limit) : hits;
+  const rerankDetails = deps.documentReranker || rerankFromQuestion
+    ? { query: rawQuery, ...(rerankFromQuestion ? {
+          question: filterQuestion, inputSource: source, predictor: deps.predictor,
+          yesNoScores: filterScores,
+        } : {}), rereankDepth: candidateLimit, candidateCount: response.hits.length,
+        returnedCount: returnedHits.length, scores: rerankScores }
+    : undefined;
+  const filterDetails = deps.documentFilter && !rerankFromQuestion
     ? {
         question: source === "jev" ? JEV_GENERAL_PROMPT : filterQuestion,
         inputSource: source,
@@ -347,13 +378,15 @@ export async function executeDirectSearchTool(
       rawQuery,
       limit,
       hits: returnedHits,
+      reranked: !!deps.documentReranker || rerankFromQuestion,
+      rerankLabel: rerankFromQuestion && deps.predictor === "pplx_decider" ? "pplx-decider reranked" : undefined,
     });
   const rendered = truncateSearchOutput(
     deps.spillDir,
     `direct_search_${deps.nextSpillSequence()}.txt`,
     renderedText,
     JSON.stringify(
-      { rawQuery, limit, candidateLimit, clueDocs, hits: returnedHits, filter: filterDetails },
+      { rawQuery, limit, candidateLimit, clueDocs, hits: returnedHits, filter: filterDetails, rerank: rerankDetails },
       null,
       2,
     ),
@@ -370,6 +403,7 @@ export async function executeDirectSearchTool(
       returnedRankStart: returnedHits.length > 0 ? 1 : 0,
       returnedRankEnd: returnedHits.length,
       ...(filterDetails ? { filter: filterDetails } : {}),
+      ...(rerankDetails ? { rerank: rerankDetails } : {}),
       retrievedDocids: docids,
       previewedDocids: docids,
       timingMs: {

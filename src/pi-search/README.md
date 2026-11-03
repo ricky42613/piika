@@ -66,6 +66,34 @@ Main export:
 
 - `registerPiSearchExtension(...)`
 
+### Optional Qwen3 document reranking (two-tool interface only)
+
+Set `PI_SEARCH_RERANK_ENABLED=1`, `PI_SEARCH_FILTER_ENABLED=0`,
+`PI_SEARCH_RERANK_BASE_URL=http://127.0.0.1:8152/v1`, and
+`PI_SEARCH_RERANK_MODEL=qwen3-reranker-4b`. On each direct `search`, Piika retrieves
+the top `REREANK_DEPTH` BM25 candidates (default 50; maximum 100), reads their
+full documents, calls Qwen3-Reranker-4B `/score` with the **search query** and the
+model's standard relevance instruction, sorts by descending activated score
+(stable ties retain BM25 order), and returns the top `hits`. It does **not**
+filter by a Yes/No threshold or invoke Qorrect. The visible result score is
+the reranker probability; tool details retain per-candidate original BM25 scores.
+Failed reads, invalid scores, and HTTP errors fail the search; no BM25 fallback.
+This mode does not affect `pi-serini-3tool` or the separate Yes/No filter.
+Filter and rerank cannot be enabled together.
+
+### Optional Yes-score reranking with a generated question
+
+To compare against an existing Qorrect Yes/No filter run while keeping its
+question generator and predictor unchanged, keep `PI_SEARCH_FILTER_ENABLED=1`
+and set `PI_SEARCH_FILTER_ACTION=rerank` (default: `filter`). Piika generates
+the same per-search question and scores every BM25 candidate as before, but
+**does not reject** scores below the threshold: it sorts all candidates by
+descending `yesProbability` (stable BM25 ties), returning the top `hits`.
+The search tool details include the generated question, score diagnostics, and
+original BM25 scores under `rerank`. This is separate from reranking directly
+on the raw query with `PI_SEARCH_RERANK_ENABLED=1`; never enable both modes at
+once. `pi-serini-3tool` remains unchanged.
+
 ### Optional yes/no search filter (two-tool interface only)
 
 Set `PI_SEARCH_FILTER_ENABLED=1` (or `true`) before launching the agent. Default is off;
@@ -79,27 +107,81 @@ modes do not require an agent-provided `filter_question`.
 {"reason":"Find evidence for the candidate's education","query":"Ada Lovelace mathematics education","hits":10,"filter_question":"Does this document describe Ada Lovelace's mathematics education or tutors?"}
 ```
 
-#### Qorrect rollout-4 question generation
+#### Qorrect question generation
 
-Set `PI_SEARCH_FILTER_QUESTION_SOURCE=qorrect` to have the separate
-`ricky42613/qorrect-rollout4` **policy** generate one filter question per search;
-`search` still requires `reason` and `query`, but not `filter_question`. The rollout-4
-prompt uses `PI_SEARCH_ORIGINAL_QUESTION` (set by the benchmark runner), the current
-`reason`, and the current `query`. It matches the model repository's `prompts.py`;
-previously seen `clue_docs` are **excluded by default** to match training. To opt into
-out-of-training-distribution seen-document context, explicitly set
+Set `PI_SEARCH_FILTER_QUESTION_SOURCE=qorrect` to have a separate Qorrect **policy**
+generate one filter question per search; `search` still requires `reason` and `query`,
+but not `filter_question`. Piika's prompt uses `PI_SEARCH_ORIGINAL_QUESTION` (set by
+the benchmark runner), the current `reason`, and the current `query`. It now matches
+`reranq`'s frozen **full-output constrained** `prompts.py` snapshot exactly, including
+rules that the question must be self-contained and must not rely on unresolved
+references such as "my question". Previously seen `clue_docs` are **excluded by
+default** to match training. To opt into out-of-training-distribution seen-document
+context, explicitly set
 `PI_SEARCH_FILTER_GENERATOR_INCLUDE_SEEN_DOCS=1` (only relevant with the clue-docs
-interface). Use `PI_SEARCH_FILTER_GENERATOR_BASE_URL` for the running vLLM
-`/v1/completions` server, and override `PI_SEARCH_FILTER_GENERATOR_MODEL` if the served
-model alias differs from `ricky42613/qorrect-rollout4`. The generation defaults are
+interface). The default generator URL is `http://127.0.0.1:18086/v1` and its
+model is `qorrect-decider-fulloutput-checkpoint717`; these can be overridden via
+`PI_SEARCH_FILTER_GENERATOR_BASE_URL` and `PI_SEARCH_FILTER_GENERATOR_MODEL`.
+The generation defaults are
 64 output tokens, temperature 1, top-p 1 and top-k 0 with thinking disabled;
 `PI_SEARCH_FILTER_GENERATOR_MAX_TOKENS` and `PI_SEARCH_FILTER_GENERATOR_TEMPERATURE`
 can override the first two. The model cache alone does **not** start a server.
+Piika passes the complete generated text (trimmed only at the ends) to the
+scorer; it does not discard lines of a multi-line completion. For a service
+that may reassign model aliases, set `PI_SEARCH_FILTER_GENERATOR_EXPECTED_MODEL_ROOT`
+to the exact `/v1/models` `root`: Piika then checks the requested model's root
+before **each** generated question and fails closed if it changes. Verify the
+served alias's actual checkpoint before a new run; selecting the default alias alone
+does not pin its root. The prompt alignment does **not** reproduce reranq's hard
+decoding constraints or training-time multi-sample generation. Historical runs
+retain their original prompt and checkpoint.
 
 Qorrect only **writes questions**. Qwen (the default predictor) scores them:
 `PI_SEARCH_FILTER_PREDICTOR=qwen`. JEV instead uses its own fixed question;
 `PI_SEARCH_FILTER_PREDICTOR=jev` does not invoke Qorrect.
 `PI_SEARCH_FILTER_BACKEND` and the Reranq filter are no longer supported.
+
+#### pplx-decider-flash-v1.2 Yes-score rerank
+
+Use the separately hosted, **non-vLLM** native decision service to score BM25
+candidates. This option uses only the direct 2-tool `search` route and does not
+change the 3-tool interface. With `PI_SEARCH_FILTER_ACTION=rerank`, Piika gets
+BM25's top `REREANK_DEPTH` documents (default 50), sends each document in a
+separate one-question decision request to `/score`, and returns the top `hits`
+after sorting by the **raw true-minus-false logit margin**. Its calibrated
+`P(true)` is logged separately; ties keep BM25 order. No probability threshold
+removes candidates (`PI_SEARCH_FILTER_THRESHOLD` does not affect rerank).
+
+For a fixed relevance instruction using each **current search query**:
+
+```bash
+PI_SEARCH_FILTER_ENABLED=1 PI_SEARCH_FILTER_ACTION=rerank \
+PI_SEARCH_RERANK_ENABLED=0 PI_SEARCH_FILTER_PREDICTOR=pplx_decider \
+PI_SEARCH_FILTER_QUESTION_SOURCE=general \
+PI_SEARCH_FILTER_PREDICTOR_BASE_URL=http://127.0.0.1:18286 \
+PI_SEARCH_FILTER_PREDICTOR_MODEL=pplx-decider-flash-v1.2 REREANK_DEPTH=50 \
+npm run run:benchmark:query-set -- --benchmark bright-earthscience --query-set test --dry-run
+```
+
+For a **Qorrect-generated** Yes/No question per search, change
+`PI_SEARCH_FILTER_QUESTION_SOURCE=qorrect` and set
+`PI_SEARCH_FILTER_GENERATOR_BASE_URL` and `PI_SEARCH_FILTER_GENERATOR_MODEL`
+to a running Qorrect policy. Qorrect writes the question; the decider scores
+individual documents against it. Its affirmative-evidence instruction now matches
+`reranq/decider_scorer.py` exactly (`pplx-decider-affirmative-evidence-v2` in
+score details); the **general** search-query instruction remains separate. This
+does not change document truncation: Piika still caps documents by characters,
+unlike reranq's 512 whitespace-word training cap. Historical runs retain their original
+instruction and results. `PI_SEARCH_FILTER_PREDICTOR_API` defaults to
+`decider_score` for this predictor; incompatible API values fail at setup.
+`PI_SEARCH_DECIDER_MAX_DOCUMENT_CHARS` defaults to 4000 (range 1–16000): this
+is an explicit **character** prefix, not a 512-token cap; overruns of the
+server's 8192-token context fail closed. HTTP or malformed-score failures
+never fall back to BM25. `/score` is the custom decision service, **not** the
+standard vLLM pooling API. See `runs/services/pplx-decider-flash-v1.2/README.md`
+for the endpoint and model protocol. Agent final rankings still come from the
+agent, not the reranked search output alone. This setting does not by itself
+perform an offline replay of recorded trajectories.
 
 `hits` is the maximum number returned after filtering; Piika scores BM25's top
 `REREANK_DEPTH` candidates (default 50, capped at 100), keeps their original order,
@@ -280,7 +362,13 @@ Owns truncation-aware spill-file behavior for large search or document reads.
 
 ### `prompt_policy.ts`
 
-Owns package-local prompt shaping and time-budget steering behavior.
+Owns package-local prompt shaping and time-budget steering behavior. The benchmark runner passes
+`PI_SEARCH_OUTPUT_MODE`, `PI_SEARCH_RANKED_LIST_DEPTH`, and `PI_SEARCH_RANKED_LIST_COUNT`
+into each agent process so a submit-now steer at 70% of `TIMEOUT_SECONDS` uses the **same**
+answer, ranked-list, or combined final-response sections as the original prompt. In
+ranked-list mode it asks for known docids, never the answer-only Explanation/Exact Answer
+format. The steer still blocks further retrieval; it cannot guarantee exact-30 when
+there are fewer than 30 known valid docids.
 
 This currently still reflects the benchmark harness environment the extension runs inside, but it remains package-owned because it is part of the extension’s retrieval workflow policy.
 

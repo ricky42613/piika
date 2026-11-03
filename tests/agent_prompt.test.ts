@@ -3,6 +3,25 @@ import test from "node:test";
 
 import { formatPiSearchPrompt, parsePiSearchOutputModes } from "../src/pi-search/agent_prompt";
 
+void test("rerank prompt does not tell the agent that low-scoring candidates are filtered", () => {
+  const keys = ["PI_SEARCH_FILTER_ENABLED", "PI_SEARCH_FILTER_ACTION", "PI_SEARCH_FILTER_QUESTION_SOURCE"] as const;
+  const previous = keys.map((key) => process.env[key]);
+  try {
+    process.env.PI_SEARCH_FILTER_ENABLED = "1";
+    process.env.PI_SEARCH_FILTER_ACTION = "rerank";
+    process.env.PI_SEARCH_FILTER_QUESTION_SOURCE = "qorrect";
+    const prompt = formatPiSearchPrompt("alpha", "plain_minimal", { outputMode: "ranked_list" });
+    assert.match(prompt, /reranks all of them by Yes probability/);
+    assert.doesNotMatch(prompt, /Only candidates with score >|in their original order/);
+  } finally {
+    keys.forEach((key, index) => {
+      const old = previous[index];
+      if (old === undefined) delete process.env[key];
+      else process.env[key] = old;
+    });
+  }
+});
+
 void test("ranked-list prompt requests an exact count when configured", () => {
   const prompt = formatPiSearchPrompt("alpha", "plain_minimal", {
     outputMode: "ranked_list",

@@ -1,14 +1,21 @@
 /** Pure filter configuration. Call only when filtering is enabled. */
 export type FilterQuestionSource = "agent" | "qorrect" | "general";
-export type FilterPredictor = "qwen" | "jev";
+export type FilterPredictor = "qwen" | "jev" | "pplx_decider";
+export type SearchFilterAction = "filter" | "rerank";
+
+export function searchFilterAction(env = process.env): SearchFilterAction {
+  const action = env.PI_SEARCH_FILTER_ACTION?.trim() || "filter";
+  if (action === "filter" || action === "rerank") return action;
+  throw new Error("PI_SEARCH_FILTER_ACTION must be filter or rerank.");
+}
 
 export function filterPredictor(env = process.env): FilterPredictor {
   if (env.PI_SEARCH_FILTER_BACKEND?.trim()) {
-    throw new Error("PI_SEARCH_FILTER_BACKEND is no longer supported; use PI_SEARCH_FILTER_PREDICTOR=qwen|jev.");
+    throw new Error("PI_SEARCH_FILTER_BACKEND is no longer supported; use PI_SEARCH_FILTER_PREDICTOR=qwen|jev|pplx_decider.");
   }
   const predictor = env.PI_SEARCH_FILTER_PREDICTOR?.trim() || "qwen";
-  if (predictor === "qwen" || predictor === "jev") return predictor;
-  throw new Error("PI_SEARCH_FILTER_PREDICTOR must be qwen or jev; qorrect is a question source only.");
+  if (predictor === "qwen" || predictor === "jev" || predictor === "pplx_decider") return predictor;
+  throw new Error("PI_SEARCH_FILTER_PREDICTOR must be qwen, jev or pplx_decider; qorrect is a question source only.");
 }
 
 export function filterQuestionSource(env = process.env): FilterQuestionSource {

@@ -118,6 +118,72 @@ void test("pyserini-rest adapter maps native search and doc responses into the s
   }
 });
 
+void test("pyserini-rest adapter reads BRIGHT-style docids containing slashes", async () => {
+  const docid = "number_of_hadley_cell/Hadley_cell2.txt";
+  const server = createServer((request, response) => {
+    assert.equal(
+      request.url,
+      "/v1/bright-earth-science/doc/number_of_hadley_cell%252FHadley_cell2.txt",
+    );
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ docid, doc: "Hadley cells on Earth" }));
+  });
+  const port = await listen(server);
+  try {
+    const backend = createPiSearchBackend(
+      process.cwd(),
+      buildPyseriniRestExtensionConfig({
+        baseUrl: `http://127.0.0.1:${port}`,
+        index: "bright-earth-science",
+      }),
+    );
+    const readResult = await backend.readDocument({ docid });
+    assert.equal(readResult.found, true);
+    if (readResult.found) {
+      assert.equal(readResult.docid, docid);
+      assert.equal(readResult.text, "Hadley cells on Earth");
+    }
+  } finally {
+    await close(server);
+  }
+});
+
+void test("pyserini-rest adapter preserves literal percent escapes in BRIGHT docids", async () => {
+  const docids = [
+    "solid_inner_core/Earth%27s_inner_core4_3.txt",
+    "22_halo/22%C2%B0_halo2.txt",
+  ];
+  const expectedPaths = [
+    "/v1/bright-earth-science/doc/solid_inner_core%252FEarth%252527s_inner_core4_3.txt",
+    "/v1/bright-earth-science/doc/22_halo%252F22%2525C2%2525B0_halo2.txt",
+  ];
+  let requests = 0;
+  const server = createServer((request, response) => {
+    assert.equal(request.url, expectedPaths[requests]);
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ docid: docids[requests], doc: "BRIGHT document" }));
+    requests += 1;
+  });
+  const port = await listen(server);
+  try {
+    const backend = createPiSearchBackend(
+      process.cwd(),
+      buildPyseriniRestExtensionConfig({
+        baseUrl: `http://127.0.0.1:${port}`,
+        index: "bright-earth-science",
+      }),
+    );
+    for (const docid of docids) {
+      const readResult = await backend.readDocument({ docid });
+      assert.equal(readResult.found, true);
+      assert.equal(readResult.docid, docid);
+    }
+    assert.equal(requests, 2);
+  } finally {
+    await close(server);
+  }
+});
+
 void test("pyserini-rest adapter rejects paginated read-document requests instead of inventing local slicing semantics", async () => {
   const backend = createPiSearchBackend(
     process.cwd(),

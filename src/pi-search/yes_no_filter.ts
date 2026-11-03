@@ -2,6 +2,7 @@ import {
   filterQuestionSource,
   filterThreshold,
   filterPredictor,
+  searchFilterAction,
   type FilterQuestionSource,
   type FilterPredictor,
 } from "./filter_config";
@@ -18,6 +19,16 @@ export function searchFilterGuidance(env = process.env): string {
   const predictor = filterPredictor(env);
   const source = filterQuestionSource(env);
   const threshold = filterThreshold(env);
+  if (searchFilterAction(env) === "rerank") {
+    const question = predictor === "jev"
+      ? "a fixed general question"
+      : source === "qorrect"
+        ? "an automatically generated yes/no question based on the original question and current search query"
+        : source === "general"
+          ? "the current search query in a fixed relevance template"
+          : "your self-contained filter_question";
+    return `Search scores BM25's top REREANK_DEPTH candidates against ${question}, then reranks all of them by ${predictor === "pplx_decider" ? "the true-minus-false decision logit margin" : "Yes probability"} and returns the top hits. No candidate is rejected by a probability threshold; ties keep BM25 order. Read promising documents with read_document.`;
+  }
   if (predictor === "jev") {
     return `Search candidates are assessed with the fixed question: "${JEV_GENERAL_PROMPT}" The tool filters BM25 top REREANK_DEPTH candidates and keeps only documents with true probability > false probability, preserving original BM25 order and returning at most hits survivors. No relevance question or criteria arguments are needed.`;
   }
@@ -48,13 +59,15 @@ export type FilterScore = {
   yesProbability: number;
   noProbability: number;
   keep: boolean;
-  probabilitySemantics: "normalized_yes_no_tokens";
+  probabilitySemantics: "normalized_yes_no_tokens" | "calibrated_decision_noul";
+  /** Raw true-minus-false decision logit margin; prefer over saturated P(true) for reranking. */
+  rerankScore?: number;
   backend?: SearchFilterBackend;
   predictor?: FilterPredictor;
   questionSource?: FilterQuestionSource;
   threshold?: number;
   promptVersion?: string;
-  scoringApi?: "score" | "generative_scoring" | "systemone" | "vllm_prompt_logprobs";
+  scoringApi?: "score" | "generative_scoring" | "systemone" | "vllm_prompt_logprobs" | "decider_score";
   promptTokensSource?: "server_usage" | "constructed_token_ids";
   model?: string;
   promptTokens?: number;
@@ -219,6 +232,39 @@ export function createYesNoFilter(
           : {}),
         documentTokens: undefined,
         documentTruncated: undefined,
+        scoringRequests: 1,
+      };
+    }
+    if (profile.scoringApi === "decider_score") {
+      const rawLimit = env.PI_SEARCH_DECIDER_MAX_DOCUMENT_CHARS?.trim() || "4000";
+      const maxChars = Number(rawLimit);
+      if (!Number.isSafeInteger(maxChars) || maxChars < 1 || maxChars > 16000)
+        throw new Error("PI_SEARCH_DECIDER_MAX_DOCUMENT_CHARS must be an integer from 1 to 16000.");
+      const passage = document.slice(0, maxChars);
+      const payload = (await post(
+        "/score",
+        { model, queries: question, documents: [passage], instruction: profile.instruction },
+        signal,
+      )) as {
+        model?: unknown;
+        data?: Array<{ index?: unknown; score?: unknown; margin?: unknown }>;
+      } | null;
+      const row = payload?.data?.[0];
+      if (payload?.model !== model || payload?.data?.length !== 1 || row?.index !== 0 ||
+          typeof row.score !== "number" || !Number.isFinite(row.score) || row.score < 0 || row.score > 1 ||
+          typeof row.margin !== "number" || !Number.isFinite(row.margin))
+        throw new Error("pplx_decider returned an invalid or incomplete probability/margin response.");
+      return {
+        ...filterScoreFromYesProbability(row.score, threshold),
+        rerankScore: row.margin,
+        predictor,
+        questionSource,
+        backend: profile.backend,
+        promptVersion: profile.promptVersion,
+        scoringApi: profile.scoringApi,
+        probabilitySemantics: profile.probabilitySemantics,
+        model,
+        documentTruncated: passage.length < document.length,
         scoringRequests: 1,
       };
     }

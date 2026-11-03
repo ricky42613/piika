@@ -182,6 +182,7 @@ void test("run_pi_benchmark ranked_list mode parses final ranking and writes TRE
   const qrelsPath = join(root, "qrels.txt");
   const outputDir = join(root, "run");
   const fakePiPath = join(root, "fake-pi.sh");
+  const steerEnvPath = join(root, "steer-env.txt");
 
   writeFileSync(queryPath, "1\talpha query\n", "utf8");
   writeFileSync(qrelsPath, "1 0 d1 1\n1 0 d2 1\n", "utf8");
@@ -189,6 +190,7 @@ void test("run_pi_benchmark ranked_list mode parses final ranking and writes TRE
     fakePiPath,
     [
       "#!/bin/sh",
+      `printf '%s|%s|%s\\n' "$PI_SEARCH_OUTPUT_MODE" "$PI_SEARCH_RANKED_LIST_DEPTH" "$PI_SEARCH_RANKED_LIST_COUNT" > "${steerEnvPath}"`,
       "printf '%s\\n' '{\"type\":\"session\"}'",
       'printf \'%s\\n\' \'{"type":"tool_execution_start","toolCallId":"1","toolName":"search","args":{"reason":"initial search","query":"alpha query"}}\'',
       'printf \'%s\\n\' \'{"type":"tool_execution_end","toolCallId":"1","toolName":"search","result":{"content":[{"type":"text","text":"Showing ranks 1-2 of 2 cached hits for search_id=s1"}],"details":{"retrievedDocids":["d1","d2"]}}}\'',
@@ -247,6 +249,7 @@ void test("run_pi_benchmark ranked_list mode parses final ranking and writes TRE
   );
 
   assert.match(output, /Wrote ranked-list TREC run file/);
+  assert.equal(readFileSync(steerEnvPath, "utf8"), "ranked_list|10|3\n");
 
   const run = JSON.parse(readFileSync(join(outputDir, "1.json"), "utf8")) as {
     metadata: { output_mode: string; ranked_list_depth: number; ranked_list_count: number };

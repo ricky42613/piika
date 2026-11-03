@@ -88,8 +88,9 @@ void test("threshold validation and strict boundaries", () => {
 void test("predictor defaults to Qwen, rejects removed backends, and source is independent", () => {
   assert.equal(filterPredictor({}), "qwen");
   assert.equal(filterPredictor({ PI_SEARCH_FILTER_PREDICTOR: "jev" }), "jev");
+  assert.equal(filterPredictor({ PI_SEARCH_FILTER_PREDICTOR: "pplx_decider" }), "pplx_decider");
   assert.equal(filterQuestionSource({ PI_SEARCH_FILTER_PREDICTOR: "qwen" }), "agent");
-  assert.throws(() => filterPredictor({ PI_SEARCH_FILTER_PREDICTOR: "reranq" }), /must be qwen or jev/);
+  assert.throws(() => filterPredictor({ PI_SEARCH_FILTER_PREDICTOR: "reranq" }), /must be qwen, jev or pplx_decider/);
   assert.throws(() => filterPredictor({ PI_SEARCH_FILTER_PREDICTOR: "qorrect" }), /question source only/);
   assert.throws(() => filterPredictor({ PI_SEARCH_FILTER_BACKEND: "reranq" }), /no longer supported/);
   assert.throws(() => filterPredictor({ PI_SEARCH_FILTER_BACKEND: "qwen3-reranker" }), /no longer supported/);

@@ -39,7 +39,7 @@ const env = {
   PI_SEARCH_FILTER_PREDICTOR_BASE_URL: "http://not-generator",
   PI_SEARCH_FILTER_PREDICTOR_MODEL: "not-generator",
 };
-void test("Qorrect rollout-4 uses reason, training prompt and sampling defaults; excludes seen docs", async () => {
+void test("Qorrect uses reason, full-output training prompt and sampling defaults; excludes seen docs", async () => {
   const generate = createFilterQuestionGenerator(env, (async (url, init) => {
     assert.equal(url, "http://model:18080/v1/completions");
     assert.ok(init);
@@ -48,7 +48,7 @@ void test("Qorrect rollout-4 uses reason, training prompt and sampling defaults;
     assert.equal(typeof bodyRaw, "string");
     const body = JSON.parse(bodyRaw as string);
     assert.deepEqual(body, {
-      model: "ricky42613/qorrect-rollout4",
+      model: "qorrect-decider-fulloutput-checkpoint717",
       prompt: [qwenChatPrompt(buildFilterQuestionPrompt(
         "Original question?", "search terms", "Find a missing fact", ["Seen document text"],
       ))],
@@ -67,16 +67,31 @@ void test("Qorrect rollout-4 uses reason, training prompt and sampling defaults;
   assert.match(buildFilterQuestionPrompt("q", "query", "reason"), /Reason for current search:\nreason/);
 });
 
-void test("rollout-4 prompt and chat template match the published checkpoint", () => {
+void test("Qorrect defaults to the full-output checkpoint endpoint and model without overriding explicit settings", async () => {
+  const generate = createFilterQuestionGenerator({ PI_SEARCH_ORIGINAL_QUESTION: "Original question?" }, (async (url, init) => {
+    assert.equal(url, "http://127.0.0.1:18086/v1/completions");
+    const body = JSON.parse(init!.body as string);
+    assert.equal(body.model, "qorrect-decider-fulloutput-checkpoint717");
+    assert.match(body.prompt[0], /Make the generated question self-contained/);
+    return Response.json({ choices: [{ text: "Does it answer the question?" }] });
+  }) as typeof fetch);
+  assert.equal(await generate("search terms", "reason"), "Does it answer the question?");
+});
+
+void test("prompt and chat template match reranq's frozen full-output constrained checkpoint", () => {
+  // SHA-256 of reranq/outputs/grpo-base-decider-qwenjudge-fulloutput-constrained-epoch1-20261027T204501Z/prompts.py
+  // build_question_prompt(example, enable_seen_docs=False/True), and its Qwen3.5 non-thinking chat template.
   const question = buildFilterQuestionPrompt("Original question?", "search terms", "Find a missing fact", ["Seen document text"]);
   const seenQuestion = buildFilterQuestionPrompt("Original question?", "search terms", "Find a missing fact", ["Seen document text"], true);
   const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
-  assert.equal(sha256(question), "6d83efe70ec76e18381a9a3edaf432856e28f3cf80989d582dda878233b7d511");
-  assert.equal(sha256(seenQuestion), "d50ba56962fba83f6537168d14c7d7128ec2412b662075fc7a3d00cd85f5e881");
-  assert.equal(sha256(qwenChatPrompt(question)), "d85babab525e4ae3fec4a9a168ed878e61c61c30a293971991378ea51b672618");
+  assert.equal(sha256(question), "017e081bdeb73b0b2057ed07df70724170b2af9548fe5f046962cbb609b37b52");
+  assert.equal(sha256(seenQuestion), "b100e023ccd97f63e28614d74063dff5f77fe7bf3edaa47eead1bc4dfcc1408c");
+  assert.equal(sha256(qwenChatPrompt(question)), "b0c967ddcfa880d1818a7f74b6b32c8584a1485533340ee31f7e697677822953");
+  assert.match(question, /document scorer sees ONLY your generated question and the document/);
+  assert.match(question, /Do not use unresolved references such as "my question"/);
 });
 
-void test("rollout-4 seen-docs prompt is opt-in, and generation settings can be overridden", async () => {
+void test("Qorrect seen-docs prompt is opt-in, and generation settings can be overridden", async () => {
   const optIn = { ...env, PI_SEARCH_FILTER_GENERATOR_INCLUDE_SEEN_DOCS: "1", PI_SEARCH_FILTER_GENERATOR_MODEL: "served-alias", PI_SEARCH_FILTER_GENERATOR_MAX_TOKENS: "32", PI_SEARCH_FILTER_GENERATOR_TEMPERATURE: "0.8" };
   const generate = createFilterQuestionGenerator(optIn, (async (_url, init) => {
     const body = JSON.parse(init!.body as string);
@@ -88,6 +103,34 @@ void test("rollout-4 seen-docs prompt is opt-in, and generation settings can be 
   }) as typeof fetch);
   assert.equal(await generate("query", "reason", undefined, ["seen text"]), "Does it answer the question?");
   assert.throws(() => qorrectSeenDocsEnabled({ PI_SEARCH_FILTER_GENERATOR_INCLUDE_SEEN_DOCS: "oops" }));
+});
+
+void test("Qorrect passes the full generated completion without first-line clipping", async () => {
+  const response = (async () => Response.json({ choices: [{ text: "  Does it answer?\nMore explanation and another question?  " }] })) as typeof fetch;
+  assert.equal(await createFilterQuestionGenerator(env, response)("query", "reason"), "Does it answer?\nMore explanation and another question?");
+});
+
+void test("opt-in Qorrect identity pin checks the actual served model root before each generation", async () => {
+  const pinned = { ...env, PI_SEARCH_FILTER_GENERATOR_MODEL: "qorrect-decider-general-inject", PI_SEARCH_FILTER_GENERATOR_EXPECTED_MODEL_ROOT: "/checkpoints/new-717" };
+  const urls: string[] = [];
+  const request = (async (url) => {
+    urls.push(String(url));
+    if (String(url).endsWith("/v1/models"))
+      return Response.json({ data: [{ id: pinned.PI_SEARCH_FILTER_GENERATOR_MODEL, root: pinned.PI_SEARCH_FILTER_GENERATOR_EXPECTED_MODEL_ROOT }] });
+    return Response.json({ choices: [{ text: "Does it answer?\n</think>" }] });
+  }) as typeof fetch;
+  const generate = createFilterQuestionGenerator(pinned, request);
+  assert.equal(await generate("q", "r"), "Does it answer?\n</think>");
+  assert.equal(await generate("q", "r"), "Does it answer?\n</think>");
+  assert.deepEqual(urls, ["http://model:18080/v1/models", "http://model:18080/v1/completions", "http://model:18080/v1/models", "http://model:18080/v1/completions"]);
+  let postCalled = false;
+  const swapped = (async (url) => {
+    if (String(url).endsWith("/v1/models")) return Response.json({ data: [{ id: pinned.PI_SEARCH_FILTER_GENERATOR_MODEL, root: "/checkpoints/old-717" }] });
+    postCalled = true;
+    throw new Error("should not generate from wrong model");
+  }) as typeof fetch;
+  await assert.rejects(createFilterQuestionGenerator(pinned, swapped)("q", "r"), /model identity changed/);
+  assert.equal(postCalled, false);
 });
 
 void test("generation rejects missing original question, failures, empty answers and cancellation", async () => {

@@ -1528,6 +1528,11 @@ async function main() {
             PI_SEARCH_EXTENSION_CONFIG: JSON.stringify(searchBackendConnection.config),
             PI_SEARCH_TOOL_INTERFACE: args.toolInterface,
             PI_SEARCH_ORIGINAL_QUESTION: query,
+            PI_SEARCH_OUTPUT_MODE: formatPiSearchOutputModes(args.outputModes),
+            PI_SEARCH_RANKED_LIST_DEPTH: String(args.rankedListDepth),
+            PI_SEARCH_RANKED_LIST_COUNT: args.rankedListCount
+              ? String(args.rankedListCount)
+              : "",
           },
           rawEventsPath,
           stderrPath,

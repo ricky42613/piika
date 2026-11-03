@@ -1,17 +1,35 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  formatPiSearchFinalResponseFormat,
+  hasPiSearchOutputMode,
+  type PiSearchOutputModes,
+} from "./agent_prompt";
 
 export const BENCHMARK_TIMEOUT_SECONDS = Number.parseFloat(process.env.TIMEOUT_SECONDS ?? "");
 export const SUBMIT_NOW_TRIGGER_RATIO = 0.7;
-export const SUBMIT_NOW_STEER_MESSAGE = [
-  "Time budget is nearly exhausted.",
-  "Further retrieval is now blocked to preserve time for submission.",
-  "Stop using tools immediately and submit your best answer right now.",
-  "Your final response must use exactly this format:",
-  "Explanation: {your explanation for your final answer. Cite supporting docids inline in square brackets [] at the end of sentences when possible, for example [123].}",
-  "Exact Answer: {your succinct, final answer}",
-  "Confidence: {your confidence score between 0% and 100%}",
-].join("\n");
+
+/** Stop retrieval without changing the response contract requested by the benchmark. */
+export function buildSubmitNowSteerMessage(
+  outputModes: PiSearchOutputModes,
+  rankedListCount?: number,
+  rankedListDepth = 1000,
+): string {
+  const wantsRankedList = hasPiSearchOutputMode(outputModes, "ranked_list");
+  return [
+    "Time budget is nearly exhausted.",
+    "Further retrieval is now blocked to preserve time for submission.",
+    "Stop using tools immediately and submit your final response right now.",
+    ...(wantsRankedList
+      ? [rankedListCount
+          ? `For the Ranked List section, list exactly ${rankedListCount} unique docids from documents already retrieved, in descending relevance. If fewer are available, submit all known valid docids; never invent IDs.`
+          : `For the Ranked List section, list up to ${rankedListDepth} unique docids from documents already retrieved, in descending relevance; never invent IDs.`]
+      : []),
+    "Your final response must use exactly this format:",
+    formatPiSearchFinalResponseFormat(outputModes),
+    "Do not include other sections, commentary, citations or scores within the ranked list.",
+  ].join("\n");
+}
 
 function stripSection(systemPrompt: string, header: string, endMarkers: string[]): string {
   const start = systemPrompt.indexOf(header);

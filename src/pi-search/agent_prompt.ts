@@ -108,6 +108,14 @@ export function hasPiSearchOutputMode(
   return modes.includes(mode);
 }
 
+/** Shared final-response contract for the initial prompt and submit-now steer. */
+export function formatPiSearchFinalResponseFormat(modes: PiSearchOutputModes): string {
+  return [
+    hasPiSearchOutputMode(modes, "answer") ? ANSWER_RESPONSE_FORMAT : undefined,
+    hasPiSearchOutputMode(modes, "ranked_list") ? RANKED_LIST_RESPONSE_FORMAT : undefined,
+  ].filter((section): section is string => Boolean(section)).join("\n\n");
+}
+
 export function formatPiSearchPrompt(
   query: string,
   _variant: PiSearchPromptVariant = "plain_minimal",
@@ -125,10 +133,7 @@ export function formatPiSearchPrompt(
       ? rankedListInstructions(options?.rankedListDepth ?? 1000, options?.rankedListCount)
       : undefined,
   ].filter((instruction): instruction is string => Boolean(instruction));
-  const responseSections = [
-    wantsAnswer ? ANSWER_RESPONSE_FORMAT : undefined,
-    wantsRankedList ? RANKED_LIST_RESPONSE_FORMAT : undefined,
-  ].filter((section): section is string => Boolean(section));
+  const responseFormat = formatPiSearchFinalResponseFormat(modes);
 
   return `${BASE_WORKFLOW}
 
@@ -139,7 +144,7 @@ ${workflow}
 ${outputInstructions.join("\n\n")}
 
 Your final response must contain exactly these sections in this order:
-${responseSections.join("\n\n")}
+${responseFormat}
 
 Do not include any text before, after, or between those sections beyond the requested fields and ranked document lines.
 
@@ -164,10 +169,7 @@ export function formatPiSearchPromptWithSuppliedContext(
       ? rankedListInstructions(options?.rankedListDepth ?? 1000, options?.rankedListCount)
       : undefined,
   ].filter((instruction): instruction is string => Boolean(instruction));
-  const responseSections = [
-    wantsAnswer ? ANSWER_RESPONSE_FORMAT : undefined,
-    wantsRankedList ? RANKED_LIST_RESPONSE_FORMAT : undefined,
-  ].filter((section): section is string => Boolean(section));
+  const responseFormat = formatPiSearchFinalResponseFormat(modes);
   const toolInterface = options?.toolInterface ?? DEFAULT_PI_SEARCH_TOOL_INTERFACE;
   const directTwoTool = isDirectTwoToolInterface(toolInterface);
   const toolNames = directTwoTool
@@ -194,7 +196,7 @@ ${isSearchFilterEnabled(toolInterface) ? `\n${searchFilterGuidance()}\n` : ""}
 ${outputInstructions.join("\n\n")}
 
 Your final response must contain exactly these sections in this order:
-${responseSections.join("\n\n")}
+${responseFormat}
 
 Do not include any text before, after, or between those sections beyond the requested fields and ranked document lines.
 

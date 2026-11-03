@@ -1,9 +1,11 @@
 import { createFilterQuestionGenerator, qorrectSeenDocsEnabled } from "./filter_question";
+import { parsePiSearchOutputModes } from "./agent_prompt";
 import {
   filterPredictor,
   filterQuestionSource,
   filterThreshold,
   rereankDepth,
+  searchFilterAction,
 } from "./filter_config";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { resolvePiSearchExtensionConfigFromEnv, type PiSearchExtensionConfig } from "./config";
@@ -12,7 +14,7 @@ import {
   dumpPromptSnapshot,
   getSubmitNowDelayMs,
   stripBenchmarkIrrelevantSystemPromptSections,
-  SUBMIT_NOW_STEER_MESSAGE,
+  buildSubmitNowSteerMessage,
   SUBMIT_NOW_TRIGGER_RATIO,
 } from "./prompt_policy";
 import {
@@ -47,6 +49,7 @@ import {
 } from "./tool_interface";
 
 import { createYesNoFilter, searchFilterGuidance, isSearchFilterEnabled } from "./yes_no_filter";
+import { createDocumentReranker, isSearchRerankEnabled } from "./reranker";
 
 export type { PiSearchToolInterface } from "./tool_interface";
 
@@ -79,6 +82,9 @@ export function registerPiSearchExtension(
   const spillDir = new ManagedTempSpillDir(options.spillDirPrefix ?? "pi-search-extension-");
   const toolInterface = resolveToolInterface(options);
   const filterEnabled = isSearchFilterEnabled(toolInterface);
+  const rerankEnabled = isSearchRerankEnabled(toolInterface);
+  if (filterEnabled && rerankEnabled) throw new Error("Search filtering and reranking cannot both be enabled.");
+  const filterAction = filterEnabled ? searchFilterAction() : "filter";
   const directTwoTool = isDirectTwoToolInterface(toolInterface);
   const clueDocsEnabled = usesSearchClueDocs(toolInterface);
   const predictor = filterEnabled ? filterPredictor() : "qwen";
@@ -86,9 +92,21 @@ export function registerPiSearchExtension(
     ? predictor === "jev" ? "general" : filterQuestionSource()
     : "agent";
   const threshold = filterEnabled ? filterThreshold() : 0.5;
-  const depth = filterEnabled ? rereankDepth() : undefined;
+  const depth = filterEnabled || rerankEnabled ? rereankDepth() : undefined;
   const generatesFilterQuestion = filterEnabled && predictor !== "jev" && questionSource === "qorrect";
   const submitNowDelayMs = getSubmitNowDelayMs();
+  const outputModes = parsePiSearchOutputModes(process.env.PI_SEARCH_OUTPUT_MODE);
+  const parseOptionalPositiveInteger = (raw: string | undefined, name: string): number | undefined => {
+    if (!raw?.trim()) return undefined;
+    const value = Number(raw.trim());
+    if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive integer.`);
+    return value;
+  };
+  const submitNowMessage = buildSubmitNowSteerMessage(
+    outputModes,
+    parseOptionalPositiveInteger(process.env.PI_SEARCH_RANKED_LIST_COUNT, "PI_SEARCH_RANKED_LIST_COUNT"),
+    parseOptionalPositiveInteger(process.env.PI_SEARCH_RANKED_LIST_DEPTH, "PI_SEARCH_RANKED_LIST_DEPTH"),
+  );
   let spillSequence = 0;
   let submitNowTimer: ReturnType<typeof setTimeout> | null = null;
   let submitNowMode = false;
@@ -119,6 +137,8 @@ export function registerPiSearchExtension(
     spillDir,
     nextSpillSequence,
     documentFilter: filterEnabled ? createYesNoFilter() : undefined,
+    filterAction,
+    documentReranker: rerankEnabled ? createDocumentReranker() : undefined,
     questionSource,
     filterThreshold: threshold,
     generateFilterQuestion: generatesFilterQuestion ? createFilterQuestionGenerator() : undefined,
@@ -169,7 +189,7 @@ export function registerPiSearchExtension(
         console.error(
           `[pi-search] Time budget threshold reached at ${(submitNowDelayMs / 1000).toFixed(1)}s (${Math.round(SUBMIT_NOW_TRIGGER_RATIO * 100)}% of TIMEOUT_SECONDS=${BENCHMARK_TIMEOUT_SECONDS}); queueing submit-now steer and blocking further retrieval tools.`,
         );
-        pi.sendUserMessage(SUBMIT_NOW_STEER_MESSAGE, { deliverAs: "steer" });
+        pi.sendUserMessage(submitNowMessage, { deliverAs: "steer" });
       } catch (error) {
         console.error(
           `[pi-search] Failed to queue submit-now steer: ${error instanceof Error ? error.message : String(error)}`,
@@ -224,7 +244,9 @@ export function registerPiSearchExtension(
     promptGuidelines:
       directTwoTool
         ? [
-            ...(filterEnabled ? [searchFilterGuidance()] : []),
+            ...(filterEnabled && filterAction === "filter" ? [searchFilterGuidance()] : []),
+            ...(filterEnabled && filterAction === "rerank" ? ["For each search, a Yes/No question is generated automatically from the original question and your current search query. Candidates are scored on their evidence for Yes and then reordered by score, highest first. No candidate is removed by a score threshold. The scorer reads the first 512 document tokens; read promising documents to verify them."] : []),
+            ...(rerankEnabled ? ["Search retrieves the top REREANK_DEPTH BM25 candidates and uses Qwen3-Reranker-4B to reorder them by relevance to your search query. hits controls how many top reranked documents are returned. There is no Yes/No filtering or generated filter question."] : []),
             ...(clueDocsEnabled
               ? [
                   "Every search call must include clue_docs as a comma-separated string. Use an empty string when this query is based only on the original question or general reasoning. If this query was motivated by facts learned from read_document, list those source docids separated by commas.",

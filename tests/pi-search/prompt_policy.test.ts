@@ -4,7 +4,41 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { dumpPromptSnapshot } from "../../src/pi-search/prompt_policy";
+import { buildSubmitNowSteerMessage, dumpPromptSnapshot } from "../../src/pi-search/prompt_policy";
+import { formatPiSearchPrompt, formatPiSearchPromptWithSuppliedContext, type PiSearchOutputModes } from "../../src/pi-search/agent_prompt";
+
+for (const modes of [["answer"], ["ranked_list"], ["answer", "ranked_list"]] as PiSearchOutputModes[]) {
+  void test(`submit-now steer preserves the original ${modes.join("+")} response sections`, () => {
+    const initial = formatPiSearchPrompt("Question?", "plain_minimal", {
+      outputModes: modes, rankedListDepth: 30, rankedListCount: 30,
+    });
+    const steer = buildSubmitNowSteerMessage(modes, 30, 30);
+    const expected = initial.split("Your final response must contain exactly these sections in this order:\n")[1]
+      ?.split("\n\nDo not include any text")[0];
+    assert.ok(expected);
+    assert.ok(steer.includes(`Your final response must use exactly this format:\n${expected}`));
+    if (modes.includes("ranked_list")) {
+      assert.match(steer, /exactly 30 unique docids/);
+      assert.match(steer, /never invent IDs/);
+    } else {
+      assert.doesNotMatch(steer, /unique docids/);
+    }
+    if (modes.length === 1 && modes[0] === "ranked_list") {
+      assert.doesNotMatch(steer, /Explanation:|Exact Answer:|Confidence:|Answer:/);
+      assert.match(steer, /Ranked List:\n1\. \{docid\}/);
+    }
+  });
+}
+
+void test("submit-now steer uses depth when no exact count and matches supplied-context format", () => {
+  const modes: PiSearchOutputModes = ["ranked_list"];
+  const steer = buildSubmitNowSteerMessage(modes, undefined, 100);
+  const initial = formatPiSearchPromptWithSuppliedContext("Question?", "Evidence", { outputModes: modes });
+  assert.match(steer, /up to 100 unique docids/);
+  assert.match(steer, /Ranked List:\n1\. \{docid\}/);
+  assert.match(initial, /Ranked List:\n1\. \{docid\}/);
+  assert.doesNotMatch(steer, /Explanation:|Exact Answer:|Confidence:/);
+});
 
 function withEnv(overrides: Record<string, string | undefined>, fn: () => void): void {
   const previous = new Map<string, string | undefined>();
