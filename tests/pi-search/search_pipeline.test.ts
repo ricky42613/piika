@@ -108,6 +108,8 @@ void test("reranked search retrieves a larger pool, reads unique documents, and 
           candidates.map((candidate) => candidate.text.length),
           [4000, 4000],
         );
+        assert.equal(candidates[0].title, "A");
+        assert.equal(candidates[1].title, "B");
         return candidates.map((candidate, index) => ({ ...candidate, rerankScore: index }));
       },
     },

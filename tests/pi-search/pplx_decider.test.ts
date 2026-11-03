@@ -26,7 +26,7 @@ void test("Decider scores documents separately and preserves all candidate field
     assert.equal(init?.method, "POST");
     assert.deepEqual(JSON.parse(String(init?.body)), {
       model: config.model,
-      state: candidates[index].text,
+      state: ["A\nFirst document", "Second\ndocument"][index],
       questions: {
         relevance: {
           type: "noul",

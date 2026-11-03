@@ -1,4 +1,5 @@
 import type { RerankCandidate, RerankScorer } from "./types";
+import { formatScoringDocument } from "./candidates";
 
 export type QwenRerankerConfig = {
   /** Server root, without /v1; for example http://127.0.0.1:8003. */
@@ -39,7 +40,7 @@ export function createQwenRerankerScorer(
         body: JSON.stringify({
           model: config.model,
           queries: criterion.question,
-          documents: candidates.map((candidate) => candidate.text),
+          documents: candidates.map(formatScoringDocument),
           instruction: "Determine whether the document satisfies the requirement in the query.",
           use_activation: true,
         }),

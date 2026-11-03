@@ -59,6 +59,24 @@ void test("document preparation takes the first 4000 characters verbatim", async
   assert.equal(calls, 1);
 });
 
+void test("document preparation keeps title separate from the 4000-character body", async () => {
+  const text = "body\n".repeat(2000);
+  const result = await prepareRerankCandidates(
+    { readDocument: async () => page("a", text, { title: "Document title" }) },
+    [{ docid: "a", title: "Search title" }],
+  );
+  assert.equal(result[0].title, "Document title");
+  assert.equal(result[0].text, text.slice(0, 4000));
+});
+
+void test("empty titles leave the prepared body unchanged", async () => {
+  const result = await prepareRerankCandidates(
+    { readDocument: async () => page("a", "body", { title: "" }) },
+    [{ docid: "a" }],
+  );
+  assert.equal(result[0].text, "body");
+});
+
 void test("document preparation reads once even when the backend returns a continuation", async () => {
   let calls = 0;
   const result = await prepareRerankCandidates(

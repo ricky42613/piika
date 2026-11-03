@@ -303,8 +303,8 @@ Enabled reranking requires `pyserini-rest-2tool`; three-tool runs are rejected.
 separately using [the reranker launchers](../scripts/rerankers/README.md).
 
 Each search retrieves `max(candidateK, hits)` candidates, deduplicates them, reads
-and scores their first 4000 JavaScript characters, and returns at most `hits`
-results. Read or scoring errors fail that search without a BM25 fallback.
+and scores each title followed by a newline and the first 4000 JavaScript characters
+of its body (body only if there is no title), and returns at most `hits` results. Read or scoring errors fail that search without a BM25 fallback.
 The run's `run_setup.json` records the configured reranking block (omitted optional
 values are not expanded into defaults). Shared and sharded launchers forward the
 file to each runner. Sharded runs also preserve the setting in merged metadata

@@ -23,7 +23,7 @@ void test("Qwen batches all documents and maps out-of-order scores without mutat
     assert.deepEqual(JSON.parse(String(init?.body)), {
       model: config.model,
       queries: criterion.question,
-      documents: candidates.map((candidate) => candidate.text),
+      documents: ["A\nFirst document", "Second\ndocument"],
       instruction: "Determine whether the document satisfies the requirement in the query.",
       use_activation: true,
     });

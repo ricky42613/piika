@@ -1,5 +1,10 @@
 import type { RerankCandidate } from "./types";
 
+/** Format model input at the scorer boundary; keep candidate fields unchanged. */
+export function formatScoringDocument(candidate: Pick<RerankCandidate, "title" | "text">): string {
+  return candidate.title ? `${candidate.title}\n${candidate.text}` : candidate.text;
+}
+
 /** Run before scoring. Keep the first occurrence of each docid in retrieval order. */
 export function deduplicateCandidates<T extends { docid: string }>(candidates: readonly T[]): T[] {
   const seen = new Set<string>();

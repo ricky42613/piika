@@ -1,4 +1,5 @@
 import type { RerankCandidate, RerankScorer } from "./types";
+import { formatScoringDocument } from "./candidates";
 
 const PPLX_AFFIRMATIVE_INSTRUCTION =
   "Given a yes/no filter question, judge whether the document provides sufficient evidence to answer Yes to that question. A document that supports No, merely mentions the topic, or provides insufficient evidence does not meet the requirement. Use only the document.";
@@ -57,7 +58,7 @@ export function createPplxDeciderScorer(
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
               model: config.model,
-              state: candidate.text,
+              state: formatScoringDocument(candidate),
               questions: {
                 relevance: {
                   type: "noul",
