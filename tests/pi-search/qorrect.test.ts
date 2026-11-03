@@ -128,7 +128,7 @@ void test("Qorrect client validates configuration before making requests", () =>
   }
 });
 
-void test("Qorrect prompt matches the saved training prompt without seen documents", () => {
+void test("Qorrect prompt matches rollout8-general-inject's saved prompt without seen documents", () => {
   const prompt = buildQorrectPrompt({
     originalQuestion: "Who designed the analytical engine?",
     currentQuery: "analytical engine designer",
@@ -152,8 +152,6 @@ Choose the scope of the question based on the CURRENT search state and informati
 Rules:
 - Output only ONE complete yes/no question, with no answer, explanation, or labels.
 - The question must be answerable from ONE document.
-- The document scorer sees ONLY your generated question and the document, not the original question, search query, or search reason above. Make the generated question self-contained by stating the relevant topic, entity, or information need explicitly.
-- Do not use unresolved references such as "my question", "the user's question", or "the search query" unless you explicitly state the referenced information in the generated question. A broad but self-contained relevance question is allowed.
 - Do not mention document IDs or ranks.
 - Do not encode answers for individual documents.
 
