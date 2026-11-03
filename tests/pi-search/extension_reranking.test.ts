@@ -124,7 +124,12 @@ void test("customized extension uses explicit original question and current sear
           choices: [{ message: { content: question }, finish_reason: "stop" }],
         });
       }
-      assert.equal(body.questions.relevance.instructions, question);
+      assert.ok(
+        body.questions.relevance.instructions.startsWith("Given a yes/no filter question,"),
+      );
+      assert.ok(
+        body.questions.relevance.instructions.endsWith(`\n\nFilter question:\n${question}`),
+      );
       return Response.json({
         model: scorer.model,
         answers: { relevance: { type: "noul", noul: 0.5 } },

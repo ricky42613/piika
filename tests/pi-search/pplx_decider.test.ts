@@ -27,7 +27,13 @@ void test("Decider scores documents separately and preserves all candidate field
     assert.deepEqual(JSON.parse(String(init?.body)), {
       model: config.model,
       state: candidates[index].text,
-      questions: { relevance: { type: "noul", instructions: criterion.question } },
+      questions: {
+        relevance: {
+          type: "noul",
+          instructions:
+            "Given a yes/no filter question, judge whether the document provides sufficient evidence to answer Yes to that question. A document that supports No, merely mentions the topic, or provides insufficient evidence does not meet the requirement. Use only the document.\n\nFilter question:\nDoes this document identify\nthe engine designer?",
+        },
+      },
     });
     return result(index === 0 ? 0.1 : 0.9);
   });

@@ -1,5 +1,8 @@
 import type { RerankCandidate, RerankScorer } from "./types";
 
+const PPLX_AFFIRMATIVE_INSTRUCTION =
+  "Given a yes/no filter question, judge whether the document provides sufficient evidence to answer Yes to that question. A document that supports No, merely mentions the topic, or provides insufficient evidence does not meet the requirement. Use only the document.";
+
 export type PplxDeciderConfig = {
   /** API base including /v1, for example http://127.0.0.1:8002/v1. */
   baseUrl: string;
@@ -56,7 +59,10 @@ export function createPplxDeciderScorer(
               model: config.model,
               state: candidate.text,
               questions: {
-                relevance: { type: "noul", instructions: criterion.question },
+                relevance: {
+                  type: "noul",
+                  instructions: `${PPLX_AFFIRMATIVE_INSTRUCTION}\n\nFilter question:\n${criterion.question}`,
+                },
               },
             }),
             signal: AbortSignal.any([workSignal, timeout]),
