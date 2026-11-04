@@ -1,0 +1,15 @@
+{
+  "mode": "customized",
+  "candidateK": 50,
+  "generator": {
+    "provider": "qorrect",
+    "baseUrl": "http://127.0.0.1:8001/v1",
+    "model": "qorrect",
+    "temperature": 0.3
+  },
+  "scorer": {
+    "provider": "pplx-decider",
+    "baseUrl": "http://127.0.0.1:8002/v1",
+    "model": "pplx-decider-flash-v1.2"
+  }
+}
