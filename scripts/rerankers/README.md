@@ -1,8 +1,13 @@
 # Reranker model services
 
 Keep virtual environments, model weights, and logs outside the repository.
-Launchers do not install dependencies or download models themselves. Pass a local
-checkpoint path to avoid the native SDK downloading a Hugging Face repo at startup.
+Launchers do not install dependencies. Model arguments accept Hugging Face repo IDs
+or local checkpoint paths. With a repo ID, vLLM or the native SDK downloads the
+weights at startup and reuses the Hugging Face cache on subsequent runs. Use a
+local checkpoint path for offline deployment.
+
+Run these commands from the repository root with the appropriate Python environment
+activated. The GPU IDs below assume two GPUs; adjust them for your host.
 
 ## Qorrect (vLLM)
 
@@ -11,9 +16,12 @@ architecture. This is intended for a GPU host; Apple Silicon requires a suitable
 backend such as vLLM Metal, whose compatibility is separate from this launcher.
 
 ```bash
-PIIKA_QORRECT_VLLM=/path/to/external/venv/bin/vllm \
-  bash scripts/rerankers/qorrect_server.sh /path/to/qorrect-checkpoint
+bash scripts/rerankers/qorrect_server.sh \
+  ricky42613/qorrect-rollout8-general-inject
 ```
+
+If the model requires authentication, run `hf auth login` with an authorized
+account before starting.
 
 The first argument is the checkpoint path or Hugging Face ID. Use a local path
 to avoid vLLM downloading weights. Defaults:
@@ -69,21 +77,23 @@ validation on the target host; launcher tests do not load model weights.
 
 Requires an external Python 3.12+ environment with the checkpoint's native
 `pplx_decider` SDK and GPU dependencies installed. Defaults to CUDA and the
-reference inference path (`fast=False`).
+reference inference path (`fast=False`). PPLX Decider uses the native SDK,
+**not vLLM**. Pass the Hugging Face ID directly; the SDK downloads the model.
 
 ```bash
-PIIKA_DECIDER_PYTHON=/path/to/external/venv/bin/python \
-  bash scripts/rerankers/decider_server.sh \
-  --model /path/to/pplx-decider-flash-v1.2 \
+python scripts/rerankers/decider_server.py \
+  --model perplexity-ai/pplx-decider-flash-v1.2 \
   --host 127.0.0.1 --port 8002 \
   --max-batch-size 8 --max-wait-ms 10 --max-queue-size 256
 ```
 
-`PIIKA_DECIDER_PYTHON` defaults to `python3`. Relative checkpoint paths are
-resolved from the caller's working directory. Run `--help` to inspect options
-without loading the SDK or model. The launcher runs in the foreground; Ctrl-C
-stops it. No authentication is provided: use loopback or a trusted proxy, not a
-publicly exposed listener.
+Both services run in the foreground; start them in separate terminals. Check
+readiness after model loading:
+
+```bash
+curl -f http://127.0.0.1:8001/v1/models  # Qorrect
+curl -f http://127.0.0.1:8002/health     # PPLX Decider
+```
 
 - `GET /health`: readiness, available after model loading.
 - `POST /v1/decisions`: text `state`, one named `noul` question, and a `model`
