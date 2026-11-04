@@ -192,9 +192,22 @@ export class PyseriniRestSearchBackend implements PiSearchBackend {
       )}`,
     );
 
-    const parsed = (await this.fetchJson("readDocument", url, signal, {
+    let parsed = (await this.fetchJson("readDocument", url, signal, {
       notFoundAsUndefined: true,
     })) as PyseriniDocResponse | undefined;
+    // Some deployments decode the URL before routing, so an encoded slash
+    // becomes a path separator. Retry only a 404 for slash-containing docids;
+    // keep standard encoding for servers that already handle it correctly.
+    if (!parsed && request.docid.includes("/")) {
+      const compatibilityUrl = new URL(
+        `${this.baseUrl}/v1/${encodeIndexPath(this.config.index)}/doc/${encodeURIComponent(
+          encodeURIComponent(request.docid),
+        )}`,
+      );
+      parsed = (await this.fetchJson("readDocument", compatibilityUrl, signal, {
+        notFoundAsUndefined: true,
+      })) as PyseriniDocResponse | undefined;
+    }
     const timingMs = { request: performance.now() - startedAt };
 
     if (!parsed) {
