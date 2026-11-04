@@ -114,6 +114,54 @@ limit: earlier inference can delay the next batch. SDK token budgets may further
 split a batch. A full queue returns HTTP 503. Client cancellation does not
 interrupt already running GPU inference.
 
+## Register the Brine model in Pi
+
+Edit `~/.pi/agent/models.json` (or `models.json` under your custom
+`PI_CODING_AGENT_DIR`). Merge the `brine` entry into the existing `providers`
+object; do not overwrite other providers. If the file does not exist, create it
+with the following contents:
+
+```json
+{
+  "providers": {
+    "brine": {
+      "baseUrl": "https://brine.sharcnet.ca/v1",
+      "api": "openai-completions",
+      "apiKey": "!printenv BRINE_API_KEY",
+      "authHeader": true,
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false,
+        "supportsStore": false,
+        "supportsStrictMode": false,
+        "maxTokensField": "max_tokens"
+      },
+      "models": [
+        {
+          "id": "Qwen3.8-27B",
+          "name": "Qwen3.8 27B (Brine)"
+        }
+      ]
+    }
+  }
+}
+```
+
+Set the key in the same Bash shell used to launch the experiment, without writing
+it into the configuration or shell history:
+
+```bash
+export BRINE_API_KEY=<your-key>
+
+# Verify the model IDs accessible to this key.
+curl -fsS https://brine.sharcnet.ca/v1/models \
+  -H "Authorization: Bearer $BRINE_API_KEY" \
+  | python3 -c 'import json,sys; print("\n".join(m["id"] for m in json.load(sys.stdin)["data"]))'
+
+# Verify registration using the repository's pinned Pi executable.
+./node_modules/.bin/pi --list-models Qwen3.8
+```
+
 ## Run BRIGHT Earth Science with Qorrect + PPLX
 
 Run from the repository root after installing the `bright-earth-science`
