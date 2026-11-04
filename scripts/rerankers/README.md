@@ -114,6 +114,50 @@ limit: earlier inference can delay the next batch. SDK token budgets may further
 split a batch. A full queue returns HTTP 503. Client cancellation does not
 interrupt already running GPU inference.
 
+## Run BRIGHT Earth Science with Qorrect + PPLX
+
+Run from the repository root after installing the `bright-earth-science`
+benchmark manifest (`earth-science` query set and qrels) and registering
+`brine/Qwen3.8-27B` in Pi. The Brine provider should reference the key with
+`"apiKey": "!printenv BRINE_API_KEY"`, which works with the pinned Pi version.
+Pyserini must serve `bright-earth-science` on port 8083; Qorrect and PPLX must
+be ready on ports 8001 and 8002 respectively.
+
+Start with one shard to validate service stability before increasing concurrency:
+
+```bash
+export BRINE_API_KEY=<your-key>
+export PYSERINI_REST_BASE_URL=http://127.0.0.1:8083
+export PYSERINI_REST_INDEX=bright-earth-science
+
+npm run run:benchmark:query-set:sharded-shared-bm25 -- \
+  --benchmark bright-earth-science \
+  --query-set earth-science \
+  --model brine/Qwen3.8-27B \
+  --shard-count 1 \
+  --timeout-seconds 900 \
+  --output-mode ranked_list \
+  --ranked-list-depth 30 \
+  --ranked-list-count 30 \
+  --tool-interface pyserini-rest-2tool \
+  --reranking-config configs/reranking/qorrect-pplx.json \
+  --output-root "runs/earth-science-qwen38-qorrect-pplx-$(date +%Y%m%d_%H%M%S)" \
+  --no-auto-evaluate-on-merge
+```
+
+This runs the full query set, not a single-query smoke test. Append `--dry-run`
+to inspect the plan without launching. Change `--shard-count 1` to `4` only after
+verifying the services can sustain the extra load. The timeout is per query;
+Qorrect and PPLX also have separate request timeouts. Exact 30 requests 30 unique
+docids, but short outputs are flagged rather than padded. Check
+`ranked_list_count_error` even when a query is marked `completed`.
+
+See [reranking configuration and experiment options](../../configs/reranking/README.md)
+for more details. Remote Pyserini manages its own threads; shard count controls
+parallel query workers, not the retrieval server's thread count.
+
+## Tests
+
 Tests (no SDK or GPU required, Python 3.12+):
 
 ```bash
